@@ -51,6 +51,22 @@ placeholders in tracked templates such as `.env.example` or
 `.env.production.example`. Keep secrets out of `VITE_*` variables because Vite
 can expose those values to browser code.
 
+### GitHub Pages
+
+In the repository, set **Settings → Pages → Build and deployment → Source** to
+**GitHub Actions**. Pushes to `main`, including merged pull requests, run
+`npm ci`, `npm test`, and `npm run build` on Node.js 24. The workflow uploads
+the browser files and license notices from `dist/` and deploys to
+[tsincla-purdue.github.io/origami-lab](https://tsincla-purdue.github.io/origami-lab/).
+After enabling Pages, you can also run the workflow manually from `main`.
+
+To verify the Pages build and preview it locally, use the same base path.
+
+```sh
+ORIGAMI_BASE_PATH=/origami-lab/ npm run build
+ORIGAMI_BASE_PATH=/origami-lab/ npm run preview
+```
+
 ## Programmable API
 
 ```js

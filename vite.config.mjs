@@ -15,7 +15,7 @@ export default defineConfig(({ isSsrBuild }) => {
   const banner = notices.map(([fileName, source]) => `${fileName}\n${source.trimEnd()}`).join('\n\n');
 
   return {
-    base: './',
+    base: process.env.ORIGAMI_BASE_PATH ?? './',
     plugins: [{
       name: 'distribution-licenses',
       apply: 'build',
