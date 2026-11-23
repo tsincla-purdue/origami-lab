@@ -12,8 +12,6 @@ Node.js 24 or newer is required.
 ```sh
 npm ci
 npm run dev
-npm test
-npm run build
 ```
 
 Open the address Vite prints. Choose an operation to preview its axis and moving
@@ -30,9 +28,28 @@ before leaving the page to keep the history. **Export FOLD** writes the currentl
 displayed snapshot, either a folded form or a crease pattern. The browser runs
 locally without a server-side service or a model.
 
-`npm run build` type-checks and builds the static browser app in `dist/` and the
-headless ES module at `dist/api/index.js`. Use `npm run preview` to serve the
-production build locally.
+## Build for distribution
+
+```sh
+npm ci
+npm test
+npm run build
+npm run preview
+```
+
+The build type-checks the project and writes the browser application to `dist/`
+and the headless ES module to `dist/api/index.js`. `npm run preview` serves the
+built playground locally.
+
+To distribute the browser app, serve `dist/index.html` with `dist/assets/` and
+the `LICENSE`, `Origamio-LICENSE.txt`, and `THIRD-PARTY-NOTICES.txt` files in
+`dist/`. To distribute the headless API, keep the license files in `dist/api/`
+with `index.js`. The JavaScript bundles also carry their applicable notices.
+
+The application requires no API keys or environment configuration. Use
+placeholders in tracked templates such as `.env.example` or
+`.env.production.example`. Keep secrets out of `VITE_*` variables because Vite
+can expose those values to browser code.
 
 ## Programmable API
 
@@ -114,8 +131,11 @@ shared seam vertices, and writes winding-relative `faceOrders` for significant
 overlaps. Use the experiment JSON for actions and outcomes. FOLD import is
 outside this milestone.
 
-## Upstream
+## Licensing
 
+Original Origami Lab code is available under the [MIT license](LICENSE).
 Origamio source and selected upstream tests are vendored without edits at
-`c28937855e8d4b08cd10c83b66689f3e94b924b2`. See its
-[MIT license](vendor/origamio/LICENSE). Production bundles carry that notice.
+`c28937855e8d4b08cd10c83b66689f3e94b924b2` under
+[Origamio's MIT license](vendor/origamio/LICENSE). The browser build includes the
+module-preload helper from Vite and Rolldown under their respective MIT licenses.
+See [third-party notices](THIRD-PARTY-NOTICES.txt).
