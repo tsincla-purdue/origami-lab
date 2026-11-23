@@ -176,6 +176,17 @@ select:disabled { opacity: .65; cursor: default; }
 .gesture-controls .primary { min-height: 39px; }
 .gesture-status { flex: 1; }
 .gesture-status p { font-size: 13px; color: var(--muted); line-height: 1.4; }
+.packet-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 12px;
+  padding: 9px 19px;
+  border-bottom: 1px solid var(--line);
+}
+.packet-controls label { margin: 0; }
+.packet-controls select { min-height: 34px; margin-top: 4px; }
+#packet-status { color: var(--muted); font-size: 12px; padding: 8px 0; }
 .drawing {
   position: relative;
   display: grid;
@@ -209,6 +220,15 @@ select:disabled { opacity: .65; cursor: default; }
 }
 .fold-endpoint { opacity: .55; }
 .preview-side { fill: #6c54dc; fill-opacity: .23; }
+.packet-highlight {
+  fill: #137458;
+  fill-opacity: .13;
+  stroke: #137458;
+  stroke-width: 1.2;
+  vector-effect: non-scaling-stroke;
+}
+.packet-moving { fill-opacity: .28; }
+.packet-anchor { fill: white; stroke: #137458; stroke-width: 1.8; vector-effect: non-scaling-stroke; }
 .preview-line {
   stroke: #4934c5;
   stroke-dasharray: 6 5;
@@ -337,7 +357,7 @@ footer code { color: var(--accent-dark); font-size: 11px; }
   main { padding: 28px 13px 12px; }
   .page-heading { align-items: stretch; flex-direction: column; gap: 15px; margin-bottom: 15px; }
   .sheet-header, .sheet-footer { padding-inline: 10px; }
-  .paper-toolbar, .gesture-controls { padding-inline: 10px; flex-wrap: wrap; }
+  .paper-toolbar, .gesture-controls, .packet-controls { padding-inline: 10px; flex-wrap: wrap; }
   .view-switch button { padding-inline: 6px; }
   .sidebar { grid-template-columns: 1fr; gap: 12px; }
   .workspace { gap: 12px; }

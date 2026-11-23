@@ -17,8 +17,18 @@ npm run dev
 Open the address Vite prints and choose a **Paper style**. In **Drag corner**
 mode, grab a marked corner with a mouse, finger, or pen and move it onto a new
 point. The dashed line is the perpendicular bisector of that motion. The
-shaded area shows the moving side, and the translucent paper shows the
-validated flat endpoint. Release to commit an accepted fold.
+shaded area shows the selected moving material, and the translucent paper
+shows the validated flat endpoint. Release to commit an accepted fold.
+
+Dragging a corner selects its top layer by default. Tap the same corner
+repeatedly to cycle through its connected packets. The highlighted facets and
+the **Layers** count show the current selection. Allow up to 3.5 seconds between
+taps. The selection remains available for a drag after that interval. Choose
+another corner to start at one layer again.
+
+The **Corner** and **Layers** controls offer the same selections by keyboard,
+plus **Whole stack**. A selected packet can also be used in **Draw crease** and
+**Advanced Controls**. A successful fold or reset clears the selection.
 
 In **Draw crease** mode, drag to draw the line, then click or tap the side of
 the paper to move. Select **Confirm fold** after checking the preview. Press
@@ -27,13 +37,15 @@ gestures display the reason and leave the paper and history unchanged.
 
 **Snap to points** uses a screen-pixel tolerance around visible corners, edge
 midpoints, exposed intersections, and the center of the folded silhouette's
-bounds. A green ring marks the exact snap target. Turn off snapping for
-arbitrary destinations or hold **Alt** while using a mouse. Open **Advanced
+bounds. When the selected packet has one hinge axis, snapping also offers the
+corner's exact landing point across it. A green ring marks the snap target.
+Turn off snapping for arbitrary destinations or hold **Alt** while using a mouse. Open **Advanced
 Controls** to preview and record the original command-based folds.
 
 Select a history row or use **Undo** to move back one attempt. **Replay** plays
-from the initial square, and **Reset paper** returns to it with the history
-available for replay. Continue folding from the latest step in **Folded** view.
+from the initial square. **Reset paper** clears the history and restores the
+initial square in the selected style, ready to fold again. Continue folding
+from the latest step in **Folded** view.
 **New experiment** starts a fresh history. Presets load at their initial
 position and keep the chosen paper style.
 
@@ -117,6 +129,10 @@ instance. Import a record to reconstruct states in another process. A move has
 `1` (left of the directed line) or `-1` (right). It may include a label and
 `placement: 'top'` or `'bottom'`. The programmatic validator understands
 Origamio's other move fields so it can explicitly report unsupported motions.
+Call `cornerPackets(state, {x, y})` with a displayed corner to find the
+edge-connected prefixes of the local stack, starting from the top layer. To fold just one of those
+packets, pass it as `move.packet`, for example `{ facetIds: [2, 3] }`.
+The IDs refer to the material facets in the state immediately before the move.
 `propose` returns eight candidates from the current bounds in stable order.
 They comprise the two midlines and two opposite-corner bisectors, with both
 sides for each axis. Check each candidate before applying it.
@@ -125,9 +141,11 @@ sides for each axis. Check each candidate before applying it.
 
 **Accepted** means executable within the lab's idealized model and numerical
 tolerances. The input is a trusted, initially flat unit square with no cuts or
-stretch. Each move carries **all** material in one half-plane through a common
-180° rigid rotation about the in-plane axis. All material on the other side
-stays fixed. Existing folds inside each packet stay closed. The model permits
+stretch. A move carries material in one half-plane through a common 180°
+rigid rotation about the in-plane axis. It can move the whole half-plane or
+just the portions of explicitly selected material facets on that side. The
+rest of the sheet stays fixed. Existing folds inside each packet stay closed.
+The model permits
 coincident plies with a preserved order within a packet, and assumes zero
 thickness and no friction. During an upward or downward rotation, every
 off-axis moving point lies outside the stationary plane until landing. At
@@ -144,14 +162,25 @@ tolerance yield an unverified result. Degenerate or ambiguous splits also
 remain unverified. This is a floating-point model of a restricted motion,
 with no guarantee for finite-thickness paper.
 
+For a partial move, the moving pieces must be connected by material edges.
+The packet must be exposed on the side it swings through at the start, and
+unselected paper must clear the fixed hinge. In the open interval of rotation,
+off-axis moving points are off the stationary plane. At landing the packet
+rests on the same exterior side of the fixed material, with its order reversed.
+This verifies both opening the top flap of a half-fold and opening the top
+two connected layers of a quarter-fold.
+
 - **Rejected** covers malformed moves, no-ops, torn hinges, and detected hinge
-  obstructions. The blocked-hinge regression checks an uncut stationary cover
-  caught between the closing plies of a partial-stack fold.
+  obstructions, as well as packets buried under stationary paper in the
+  direction of the swing. The blocked-hinge regression checks an uncut
+  stationary cover caught between the closing plies of a partial-stack fold.
 - **Unverified** covers unknown states, results outside the numerical or facet
   bounds, motions at non-flat angles, grouped operations, region and window
-  selections, and partial or inside folds without a detected obstruction.
-  General pocket insertion, squash folds, flexible motion, and arbitrary 3D
-  paths remain outside this validator.
+  selections, disconnected moving pieces, and ambiguous hinge clearances.
+  Origamio can compute flat trials for some of these configurations. Legacy
+  rank-only selectors and inside placements retain their previous verification
+  rules. General pocket insertion, squash folds, flexible motion, and arbitrary
+  3D paths remain outside this validator.
 
 Rejected and unverified moves keep the previous state. Any geometric trial used
 to diagnose them is discarded.
@@ -159,7 +188,8 @@ to diagnose them is discarded.
 ## Experiment data and interoperability
 
 Experiment JSON includes the initial sheet, exact numeric action inputs,
-validation outcomes, snapshots after each attempt, the final state, the full
+validation outcomes, material facet IDs for packet moves, snapshots after
+each attempt, the final state, the full
 Origamio revision, and the numerical policy. Proposal generation and execution
 use no randomness. Import checks the engine and policy, reruns the move log,
 and compares each recorded outcome, intermediate snapshot, and final state to

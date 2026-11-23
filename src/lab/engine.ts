@@ -1,6 +1,6 @@
 import {
   AREA_EPS, EPS, ON_LINE_EPS, apply as mapPoint, area, bounds, chord, clipPolygon,
-  distance, intersectConvex, perpendicularBisector, reflection, signedDistance,
+  distance, dot, intersectConvex, lineDirection, perpendicularBisector, reflection, signedDistance,
   type Line, type Polygon, type Vec,
 } from '../../vendor/origamio/src/geometry';
 import {
@@ -8,8 +8,9 @@ import {
 } from '../../vendor/origamio/src/paper';
 import { hinges, tears } from '../../vendor/origamio/src/rigid';
 import { parseStep, type FoldStep, type StepJson } from '../../vendor/origamio/src/sequence';
+import { connected, foldPacket, type MaterialPacket } from './packets';
 
-export type Move = StepJson;
+export type Move = StepJson & { readonly packet?: MaterialPacket };
 export type { PaperState };
 export type Validation = {
   readonly status: 'accepted' | 'rejected' | 'unverified';
@@ -55,7 +56,7 @@ export function initialState(): PaperState {
 const outcome = (status: Validation['status'], code: string, reason: string): Validation =>
   ({ status, code, reason });
 
-function parseMove(value: unknown): FoldStep {
+function parseMove(value: unknown): FoldStep & { readonly packet?: MaterialPacket } {
   const fields = ['line', 'side', 'layers', 'region', 'window', 'placement', 'angle', 'attached'];
   function check(part: unknown, extras: string[]) {
     if (!part || typeof part !== 'object' || Array.isArray(part)) throw new Error('Expected a move object.');
@@ -70,12 +71,22 @@ function parseMove(value: unknown): FoldStep {
       }
     }
   }
-  check(value, ['also', 'label']);
+  check(value, ['also', 'label', 'packet']);
   const move = value as Move;
   if (Array.isArray(move.also)) {
     for (const part of move.also) check(part, []);
   }
-  return parseStep(move);
+  const step = parseStep(move);
+  const packet = move.packet;
+  if (packet === undefined) return step;
+  if (!packet || typeof packet !== 'object' || Object.keys(packet).some(key => key !== 'facetIds') ||
+      !Array.isArray(packet.facetIds) || !packet.facetIds.length || packet.facetIds.length > maxFacets ||
+      !Array.from(packet.facetIds).every(id => Number.isSafeInteger(id) && id >= 0) ||
+      new Set(packet.facetIds).size !== packet.facetIds.length) {
+    throw new Error('A material packet needs distinct facet IDs from the current sheet.');
+  }
+  if (move.layers !== undefined || move.attached) throw new Error('Use material facet IDs or layer and attachment selectors.');
+  return { ...step, packet };
 }
 
 const interval = (poly: Polygon, axis: Line) => {
@@ -85,6 +96,13 @@ const interval = (poly: Polygon, axis: Line) => {
 
 function onAxis(axis: Line, points: Polygon): boolean {
   return points.every(point => Math.abs(signedDistance(axis, point)) <= auditDistance);
+}
+
+function segmentsOverlap(first: readonly Vec[], second: readonly Vec[], axis: Line): boolean {
+  const direction = lineDirection(axis);
+  const [a, b] = first.map(point => dot(point, direction)).sort((x, y) => x - y);
+  const [c, d] = second.map(point => dot(point, direction)).sort((x, y) => x - y);
+  return Math.min(b, d) - Math.max(a, c) > auditDistance;
 }
 
 function blockedHinge(before: PaperState, trial: FoldResult): boolean {
@@ -110,8 +128,8 @@ function blockedHinge(before: PaperState, trial: FoldResult): boolean {
       if (area(overlap) <= auditArea) return false;
       const segment = chord(overlap, trial.line);
       if (!segment) return false;
-      const horizontal = Math.abs(edge[0].x - edge[1].x) >= Math.abs(edge[0].y - edge[1].y);
-      const coordinate = horizontal ? 'x' : 'y';
+      // Keep the original tolerance along the dominant coordinate for legacy replay.
+      const coordinate = Math.abs(edge[0].x - edge[1].x) >= Math.abs(edge[0].y - edge[1].y) ? 'x' : 'y';
       const [a, b] = edge.map(point => point[coordinate]).sort((x, y) => x - y);
       const [c, d] = segment.map(point => point[coordinate]).sort((x, y) => x - y);
       return Math.min(b, d) - Math.max(a, c) > auditDistance;
@@ -124,7 +142,7 @@ interface PacketPart {
   readonly rank: number;
 }
 
-function inspectPacket(before: PaperState, trial: FoldResult, step: FoldStep): boolean {
+function inspectPacket(before: PaperState, trial: FoldResult, step: FoldStep, selected?: ReadonlySet<number>): boolean {
   const moved = new Set(trial.movedIds);
   const flip = reflection(step.line);
   const moving = new Map<number, PacketPart>();
@@ -134,6 +152,10 @@ function inspectPacket(before: PaperState, trial: FoldResult, step: FoldStep): b
   // Check material-space clipping against the same construction in folded space.
   for (const facet of before.facets) {
     const poly = currentPolygon(facet);
+    if (selected && !selected.has(facet.id)) {
+      staying.set(facet.id, { poly, rank: facet.z });
+      continue;
+    }
     const { positive, negative } = clipPolygon(poly, step.line);
     const { low, high } = interval(poly, step.line);
     if ((high > ON_LINE_EPS && !positive.length) || (low < -ON_LINE_EPS && !negative.length)) {
@@ -181,8 +203,39 @@ function inspectPacket(before: PaperState, trial: FoldResult, step: FoldStep): b
     onAxis(step.line, [hinge.a, hinge.b].map(p => mapPoint(inTrial.get(hinge.p)!.transform, p))));
 }
 
+function checkPartialMotion(before: PaperState, trial: FoldResult, step: FoldStep, selected: ReadonlySet<number>): Validation | undefined {
+  const movingIds = new Set(trial.movedIds);
+  if (!connected(movingIds, trial.state)) {
+    return outcome('unverified', 'disconnected-packet', 'The moving pieces do not form one edge-connected material packet.');
+  }
+  const towardTop = step.options.placement !== 'bottom';
+  const stationary = before.facets.filter(facet => !selected.has(facet.id))
+    .map(facet => ({ z: facet.z, poly: currentPolygon(facet) }));
+  for (const facet of before.facets.filter(facet => selected.has(facet.id))) {
+    const cut = clipPolygon(currentPolygon(facet), step.line);
+    const moving = step.side === 1 ? cut.positive : cut.negative;
+    if (stationary.some(cover => (towardTop ? cover.z >= facet.z : cover.z <= facet.z) &&
+        area(intersectConvex(moving, cover.poly)) > AREA_EPS)) {
+      return outcome('rejected', 'buried-packet', 'Stationary paper covers the moving packet on the side it would swing through.');
+    }
+  }
+
+  const facets = new Map(trial.state.facets.map(facet => [facet.id, facet]));
+  const welds = hinges(trial.state).filter(hinge => movingIds.has(hinge.p) !== movingIds.has(hinge.q));
+  for (const {poly} of stationary) {
+    const {low, high} = interval(poly, step.line);
+    if (low >= -ON_LINE_EPS || high <= ON_LINE_EPS) continue;
+    const crossing = chord(poly, step.line);
+    if (crossing && welds.some(({p, a, b}) => segmentsOverlap(
+      [mapPoint(facets.get(p)!.transform, a), mapPoint(facets.get(p)!.transform, b)], crossing, step.line,
+    ))) {
+      return outcome('unverified', 'hinge-cover', 'Stationary paper spans the joined hinge, so its clearance cannot be verified.');
+    }
+  }
+}
+
 function evaluate(state: PaperState, move: unknown): { validation: Validation; trial?: FoldResult } {
-  let step: FoldStep;
+  let step: ReturnType<typeof parseMove>;
   try {
     step = parseMove(move);
   } catch (error) {
@@ -195,7 +248,12 @@ function evaluate(state: PaperState, move: unknown): { validation: Validation; t
   if (step.also?.length || opts.angle !== undefined || opts.region || opts.window) {
     return { validation: outcome('unverified', 'unsupported-motion', 'This motion is outside the single-axis flat-fold model.') };
   }
-  const full = !opts.layers || opts.layers.kind === 'all';
+  const selected = step.packet && new Set(step.packet.facetIds);
+  if (selected && [...selected].some(id => !state.facets.some(facet => facet.id === id))) {
+    return { validation: outcome('rejected', 'unknown-facet', 'The selected material does not belong to this state.') };
+  }
+  const partial = selected && selected.size < state.facets.length ? selected : undefined;
+  const full = !partial && (!opts.layers || opts.layers.kind === 'all');
   if (state.facets.length >= maxFacets) {
     return { validation: outcome('unverified', 'facet-limit', 'This state has reached the validator’s facet budget.') };
   }
@@ -209,12 +267,15 @@ function evaluate(state: PaperState, move: unknown): { validation: Validation; t
   if (!portions.some(({low, high}) => moving(low, high))) {
     return { validation: outcome('rejected', 'no-op', 'There is no paper on the moving side.') };
   }
+  if (partial && state.facets.some((facet, index) => partial.has(facet.id) && !moving(portions[index].low, portions[index].high))) {
+    return { validation: outcome('rejected', 'packet-side', 'Choose a moving side that contains part of every selected facet.') };
+  }
   if (full && !portions.some(({low, high}) => stationary(low, high))) {
     return { validation: outcome('rejected', 'no-stationary-paper', 'This would turn the entire sheet over without a fixed hinge.') };
   }
 
   try {
-    const trial = fold(state, step.line, step.side, opts);
+    const trial = partial ? foldPacket(state, step.line, step.side, partial, opts) : fold(state, step.line, step.side, opts);
     if (!trial.movedIds.length) {
       return { validation: outcome('rejected', 'no-op', 'No selected paper moved.') };
     }
@@ -227,12 +288,17 @@ function evaluate(state: PaperState, move: unknown): { validation: Validation; t
     if ((!full || opts.placement === 'inside') && blockedHinge(state, trial)) {
       return { validation: outcome('rejected', 'blocked-hinge', 'A stationary layer crosses the hinge between its closing plies.') };
     }
-    if (!full || opts.placement === 'inside') {
+    if ((!full && !partial) || opts.placement === 'inside') {
       return { validation: outcome('unverified', 'unsupported-stack', 'The motion of a partial stack or inside placement is unverified.') };
     }
     const foldedArea = trial.state.facets.reduce((total, facet) => total + area(currentPolygon(facet)), 0);
-    if (Math.abs(foldedArea - state.width * state.height) > auditArea || !inspectPacket(state, trial, step)) {
+    if (Math.abs(foldedArea - state.width * state.height) > auditArea || !inspectPacket(state, trial, step, partial)) {
       return { validation: outcome('unverified', 'packet-audit', 'The result could not be verified as two packets joined only along the fold axis.') };
+    }
+    if (partial) {
+      const obstruction = checkPartialMotion(state, trial, step, partial);
+      if (obstruction) return { validation: obstruction };
+      return { validation: outcome('accepted', 'packet-fold', 'The connected material packet can swing 180° on the exposed side of its fixed hinge.'), trial };
     }
     return { validation: outcome('accepted', 'simple-fold', 'A whole-stack half-plane can rotate 180° about the fixed axis.'), trial };
   } catch {
