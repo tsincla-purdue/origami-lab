@@ -1,2 +1,11 @@
 node_modules/
 dist/
+
+# Local environment files and example templates
+*.env
+*.env.*
+.envrc
+.envrc.*
+!*.env.example
+!*.env.*.example
+!.envrc.example
