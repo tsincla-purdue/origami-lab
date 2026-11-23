@@ -1,13 +1,15 @@
 import './style.css';
-import { type Line } from '../vendor/origamio/src/geometry';
+import type { Vec } from '../vendor/origamio/src/geometry';
 import { foldedPoints } from '../vendor/origamio/src/paper';
-import { cameraViewBox, fitCamera, renderFolded, renderUnfolded, viewBox } from '../vendor/origamio/src/render';
+import { cameraViewBox, fitCamera, viewBox } from '../vendor/origamio/src/render';
 import {
-  PRESETS, createExperiment, exportFold, importExperiment, propose, recordMove,
-  serializeExperiment, stateAt, validate,
+  DEFAULT_PAPER_STYLE, PAPER_STYLES, PRESETS, apply, createExperiment, exportFold, importExperiment,
+  isPaperStyle, propose, recordMove, serializeExperiment, setPaperStyle, stateAt, validate,
 } from './lab';
-import type { Experiment, Move, Validation } from './lab';
+import type { Experiment, Move, PaperStyle, Validation } from './lab';
 import { MAX_EXPERIMENT_LENGTH } from './lab/experiment';
+import { connectGestures, draftMove, type Draft, type Tool } from './playground/gestures';
+import { cornerHandles, faceColor, paperMarkup, previewMarkup, styleSwatch } from './playground/paper-view';
 
 const get = <T extends HTMLElement | SVGElement = HTMLElement>(id: string) => document.getElementById(id) as unknown as T;
 const candidate = get<HTMLSelectElement>('candidate');
@@ -20,12 +22,39 @@ const undo = get<HTMLButtonElement>('undo');
 const replay = get<HTMLButtonElement>('replay');
 const reset = get<HTMLButtonElement>('reset');
 const fileInput = get<HTMLInputElement>('import-file');
+const advanced = get<HTMLDetailsElement>('advanced');
+const snapToggle = get<HTMLInputElement>('snap-toggle');
+const confirmFold = get<HTMLButtonElement>('confirm-fold');
+const cancelFold = get<HTMLButtonElement>('cancel-fold');
 
-let experiment = createExperiment();
+const styleKey = 'origami-lab.paper-style';
+function savedStyle(): PaperStyle {
+  try {
+    const style = localStorage.getItem(styleKey);
+    if (isPaperStyle(style)) return style;
+  } catch { /* Local settings are optional. */ }
+  return DEFAULT_PAPER_STYLE;
+}
+
+function rememberStyle(style: PaperStyle) {
+  try { localStorage.setItem(styleKey, style); }
+  catch { /* The experiment still carries the style. */ }
+}
+
+let experiment = createExperiment(savedStyle());
 let cursor = 0;
 let creaseView = false;
 let moves: Move[] = [];
 let playback: number | undefined;
+let tool: Tool = 'corner';
+let pending: Draft | undefined;
+let hoverCorner: Vec | undefined;
+let preview: ReturnType<typeof apply> | undefined;
+let gestureFeedback: Validation | undefined;
+
+const atTip = () => cursor === experiment.attempts.length && playback === undefined;
+const editable = () => atTip() && !creaseView;
+const gestures = connectGestures(paper, { snapping: () => snapToggle.checked, show: showDraft, commit: finishDraft });
 
 function notify(message = '', error = false) {
   notice.hidden = !message;
@@ -41,29 +70,108 @@ function stopPlayback() {
 function seek(position: number) {
   stopPlayback();
   cursor = position;
+  clearGesture();
   render();
+}
+
+function pixelUnit() {
+  const matrix = paper.getScreenCTM();
+  return matrix ? 1 / (Math.hypot(matrix.a, matrix.b) || 1) : 1;
+}
+
+function drawHandles() {
+  get<SVGGElement>('paper-handles').innerHTML = cornerHandles(gestures.corners(), pixelUnit());
+}
+
+function drawOverlay() {
+  const layer = get<SVGGElement>('paper-preview');
+  if (creaseView) {
+    layer.innerHTML = '';
+    return;
+  }
+  const move = atTip() && advanced.open && !pending && !hoverCorner && !gestureFeedback ? moves[candidate.selectedIndex] : undefined;
+  const guide = pending ?? (move && {
+    line: { a: { x: move.line[0][0], y: move.line[0][1] }, b: { x: move.line[1][0], y: move.line[1][1] } },
+    side: move.side,
+  });
+  const endpoint = preview?.validation.status === 'accepted' ? preview.state : undefined;
+  layer.innerHTML = previewMarkup(stateAt(experiment, cursor), guide, endpoint, hoverCorner, pixelUnit());
+}
+
+function gestureStatus() {
+  const verdict = preview?.validation ?? gestureFeedback;
+  const status = get('gesture-status');
+  status.hidden = !verdict;
+  status.className = `status-pill ${verdict?.status ?? ''}`;
+  const text = verdict?.status ?? '';
+  if (status.textContent !== text) status.textContent = text;
+  const message = verdict?.reason ?? (creaseView ? 'Switch to Folded to use the fold tools.' :
+    !atTip() ? 'Return to the last history step to continue folding.' :
+    pending ? 'Tap the side of the line you want to move.' :
+    tool === 'corner' ? 'Drag a marked corner onto a new point.' : 'Draw a crease, then tap the side to move.');
+  const reason = get('gesture-reason');
+  if (reason.textContent !== message) reason.textContent = message;
+  confirmFold.hidden = pending?.tool !== 'crease' || pending.side === undefined;
+  confirmFold.disabled = preview?.validation.status !== 'accepted';
+  cancelFold.hidden = !pending;
+}
+
+function showDraft(draft?: Draft, hover?: Vec) {
+  pending = draft;
+  hoverCorner = hover;
+  if (draft) gestureFeedback = undefined;
+  const move = draft && draftMove(draft);
+  preview = move && editable() ? apply(experiment.final, move) : undefined;
+  drawOverlay();
+  gestureStatus();
+}
+
+function clearGesture() {
+  gestureFeedback = undefined;
+  gestures.cancel();
+}
+
+function finishDraft(draft: Draft) {
+  const move = draftMove(draft);
+  if (!move || !editable()) return;
+  const verdict = validate(experiment.final, move);
+  if (verdict.status === 'accepted') {
+    commitMove(move);
+  } else {
+    gestureFeedback = verdict;
+    gestures.cancel();
+  }
 }
 
 function displayDrawing() {
   const state = stateAt(experiment, cursor);
-  const atTip = cursor === experiment.attempts.length;
-  const move = atTip && playback === undefined ? moves[candidate.selectedIndex] : undefined;
+  const style = experiment.appearance.paperStyle;
   get('folded-view').setAttribute('aria-pressed', String(!creaseView));
   get('crease-view').setAttribute('aria-pressed', String(creaseView));
+  for (const mode of ['corner', 'crease'] as const) {
+    const button = get<HTMLButtonElement>(`${mode}-tool`);
+    button.setAttribute('aria-pressed', String(tool === mode));
+    button.disabled = !editable();
+  }
+  snapToggle.disabled = !editable();
   get('sheet-caption').textContent = `${state.facets.length} ${state.facets.length === 1 ? 'facet' : 'facets'} · ${state.foldCount} ${state.foldCount === 1 ? 'fold' : 'folds'}`;
   paper.setAttribute('aria-label', creaseView ? 'Unfolded paper and crease pattern' : 'Current folded paper');
   paper.setAttribute('viewBox', creaseView ? viewBox(state.width, state.height) :
     cameraViewBox(state.size, fitCamera(state.size, foldedPoints(state))));
-  const line: Line | undefined = move && {
-    a: { x: move.line[0][0], y: move.line[0][1] },
-    b: { x: move.line[1][0], y: move.line[1][1] },
-  };
-  paper.innerHTML = creaseView ? renderUnfolded(state) :
-    renderFolded(state, move && line ? { preview: { line, side: move.side } } : {});
-  get('legend').innerHTML = creaseView
+  get<SVGGElement>('paper-scene').setAttribute('transform', `translate(0 ${state.size}) scale(1 -1)`);
+  get<SVGGElement>('paper-art').innerHTML = paperMarkup(state, style, creaseView);
+  gestures.setContext(editable() ? state : undefined, tool);
+  drawHandles();
+  drawOverlay();
+  gestureStatus();
+  const legend = get('legend');
+  legend.style.setProperty('--paper-front', faceColor(style, 'front'));
+  legend.style.setProperty('--paper-back', faceColor(style, 'back'));
+  legend.innerHTML = creaseView
     ? '<span><i class="swatch crease-swatch"></i> Crease</span>'
-    : '<span><i class="swatch front"></i> Paper front</span><span><i class="swatch back"></i> Paper back</span>' +
-      (move ? '<span><i class="swatch axis"></i> Fold axis</span>' : '');
+    : '<span><i class="swatch front"></i> Front</span><span><i class="swatch back"></i> Reverse</span>';
+  get('style-name').textContent = PAPER_STYLES.find(({id}) => id === style)?.name ?? '';
+  for (const button of styleButtons) button.setAttribute('aria-pressed', String(button.value === style));
 }
 
 function showValidation(validation: Validation | undefined, canAttempt: boolean) {
@@ -82,7 +190,7 @@ function renderCandidate() {
   const available = !candidate.disabled && move;
   const recorded = cursor > 0 ? experiment.attempts[cursor - 1].validation : undefined;
   showValidation(available ? validate(stateAt(experiment, cursor), move) : recorded, Boolean(available));
-  displayDrawing();
+  drawOverlay();
 }
 
 function renderHistory() {
@@ -135,6 +243,7 @@ function render() {
 
   renderHistory();
   renderCandidate();
+  displayDrawing();
 
   undo.disabled = cursor === 0;
   reset.disabled = cursor === 0;
@@ -146,6 +255,8 @@ function replaceExperiment(next: Experiment, position: number) {
   stopPlayback();
   experiment = next;
   cursor = position;
+  rememberStyle(next.appearance.paperStyle);
+  clearGesture();
   notify();
   render();
 }
@@ -163,21 +274,59 @@ function download(filename: string, content: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-candidate.addEventListener('change', renderCandidate);
-perform.addEventListener('click', () => {
-  const move = moves[candidate.selectedIndex];
-  if (!move || cursor !== experiment.attempts.length) return;
+function commitMove(move: Move) {
+  if (!atTip()) return;
   try {
     experiment = recordMove(experiment, move);
     cursor = experiment.attempts.length;
+    clearGesture();
     notify();
     render();
   } catch (error) {
+    clearGesture();
     notify((error as Error).message, true);
   }
+}
+
+const styleButtons = PAPER_STYLES.map(({id, name}) => {
+  const button = document.createElement('button');
+  button.className = 'style-choice';
+  button.type = 'button';
+  button.value = id;
+  button.title = name;
+  button.setAttribute('aria-label', name);
+  button.innerHTML = styleSwatch(id);
+  button.addEventListener('click', () => {
+    experiment = setPaperStyle(experiment, id);
+    rememberStyle(id);
+    displayDrawing();
+  });
+  return button;
 });
-get('crease-view').addEventListener('click', () => { creaseView = true; displayDrawing(); });
-get('folded-view').addEventListener('click', () => { creaseView = false; displayDrawing(); });
+get('paper-styles').replaceChildren(...styleButtons);
+
+new ResizeObserver(() => {
+  drawHandles();
+  drawOverlay();
+}).observe(paper);
+candidate.addEventListener('change', renderCandidate);
+advanced.addEventListener('toggle', drawOverlay);
+perform.addEventListener('click', () => {
+  const move = moves[candidate.selectedIndex];
+  if (move) commitMove(move);
+});
+for (const mode of ['corner', 'crease'] as const) {
+  get(`${mode}-tool`).addEventListener('click', () => {
+    tool = mode;
+    clearGesture();
+    displayDrawing();
+  });
+}
+confirmFold.addEventListener('click', () => { if (pending) finishDraft(pending); });
+cancelFold.addEventListener('click', clearGesture);
+document.addEventListener('keydown', event => { if (event.key === 'Escape') clearGesture(); });
+get('crease-view').addEventListener('click', () => { creaseView = true; clearGesture(); displayDrawing(); });
+get('folded-view').addEventListener('click', () => { creaseView = false; clearGesture(); displayDrawing(); });
 undo.addEventListener('click', () => seek(cursor - 1));
 reset.addEventListener('click', () => seek(0));
 replay.addEventListener('click', () => {
@@ -186,6 +335,7 @@ replay.addEventListener('click', () => {
     return;
   }
   cursor = 0;
+  clearGesture();
   playback = window.setInterval(() => {
     cursor++;
     if (cursor === experiment.attempts.length) stopPlayback();
@@ -194,7 +344,7 @@ replay.addEventListener('click', () => {
   render();
 });
 get('new-experiment').addEventListener('click', () => {
-  if (canReplace()) replaceExperiment(createExperiment(), 0);
+  if (canReplace()) replaceExperiment(createExperiment(experiment.appearance.paperStyle), 0);
 });
 
 PRESETS.forEach(({name}, index) => preset.add(new Option(name, String(index))));
@@ -202,7 +352,7 @@ preset.addEventListener('change', () => {
   const chosen = PRESETS[Number(preset.value)];
   preset.value = '';
   if (!chosen || !canReplace()) return;
-  replaceExperiment(chosen.moves.reduce(recordMove, createExperiment()), 0);
+  replaceExperiment(chosen.moves.reduce(recordMove, createExperiment(experiment.appearance.paperStyle)), 0);
   notify(`${chosen.name} loaded. Select Replay or a step in the history.`);
 });
 

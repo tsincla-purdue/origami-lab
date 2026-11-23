@@ -7,10 +7,12 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build && vite build --ssr src/lab/index.ts --outDir dist/api",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:browser": "npm run build && playwright test"
   },
   "engines": { "node": ">=24" },
   "devDependencies": {
+    "@playwright/test": "1.57.0",
     "typescript": "^6.0.3",
     "vite": "^8.3.2",
     "vitest": "^5.0.3"

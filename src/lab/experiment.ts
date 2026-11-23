@@ -1,4 +1,5 @@
 import { ENGINE_REVISION, NUMERICS, apply, deepFreeze, initialState, type Move, type PaperState, type Validation } from './engine';
+import { DEFAULT_PAPER_STYLE, isPaperStyle, type PaperStyle } from './paper-style';
 
 export interface Attempt {
   readonly move: Move;
@@ -11,6 +12,7 @@ export interface Experiment {
   readonly version: 1;
   readonly engine: { readonly name: 'Origamio'; readonly revision: string };
   readonly numerics: typeof NUMERICS;
+  readonly appearance: { readonly paperStyle: PaperStyle };
   readonly initial: PaperState;
   readonly attempts: readonly Attempt[];
   readonly final: PaperState;
@@ -19,17 +21,22 @@ export interface Experiment {
 const MAX_ATTEMPTS = 256;
 export const MAX_EXPERIMENT_LENGTH = 32_000_000;
 
-export function createExperiment(): Experiment {
+export function createExperiment(paperStyle: PaperStyle = DEFAULT_PAPER_STYLE): Experiment {
   const state = initialState();
   return deepFreeze({
     format: 'origami-lab',
     version: 1,
     engine: { name: 'Origamio', revision: ENGINE_REVISION },
     numerics: NUMERICS,
+    appearance: { paperStyle },
     initial: state,
     attempts: [],
     final: state,
   });
+}
+
+export function setPaperStyle(experiment: Experiment, paperStyle: PaperStyle): Experiment {
+  return deepFreeze({ ...experiment, appearance: { paperStyle } });
 }
 
 /** Record an attempted action. Only an accepted action changes the paper. */
@@ -79,7 +86,9 @@ export function importExperiment(text: string): Experiment {
   if (!file || file.format !== 'origami-lab' || file.version !== 1) {
     throw new Error('Expected an Origami Lab v1 experiment.');
   }
-  let replay = createExperiment();
+  const paperStyle = file.appearance === undefined ? DEFAULT_PAPER_STYLE : file.appearance?.paperStyle;
+  if (!isPaperStyle(paperStyle)) throw new Error('Unknown paper style.');
+  let replay = createExperiment(paperStyle);
   if (!matches(replay.engine, file.engine) || !matches(replay.numerics, file.numerics)) {
     throw new Error('The engine revision or numerical policy differs from this build.');
   }
