@@ -37,7 +37,6 @@
       <div class="page-heading">
         <div>
           <h1>Folding playground</h1>
-          <p>Explore simple folds and replay how the sheet changes.</p>
         </div>
         <div class="preset-control">
           <label for="preset">Presets</label>
@@ -51,7 +50,7 @@
         <section class="card sheet-card" aria-labelledby="paper-title">
           <div class="sheet-header">
             <div>
-              <h2 id="paper-title">Paper configuration</h2>
+              <h2 id="paper-title">Folding table</h2>
               <span class="sheet-caption" id="sheet-caption"></span>
             </div>
             <div class="view-switch" role="group" aria-label="Paper view">
@@ -59,10 +58,29 @@
               <button type="button" id="crease-view" aria-pressed="false">Crease pattern</button>
             </div>
           </div>
+          <div class="paper-toolbar">
+            <div class="view-switch" role="group" aria-label="Fold tool">
+              <button type="button" id="corner-tool" aria-pressed="true">Drag corner</button>
+              <button type="button" id="crease-tool" aria-pressed="false">Draw crease</button>
+            </div>
+            <label class="snap-toggle"><input id="snap-toggle" type="checkbox" checked /> Snap to points</label>
+          </div>
           <div class="drawing">
-            <span class="axis-label" aria-hidden="true">y ↑</span>
-            <svg id="paper" role="img" aria-label="Folded paper geometry"></svg>
-            <span class="x-axis-label" aria-hidden="true">x →</span>
+            <svg id="paper" role="img" aria-label="Folded paper geometry" aria-describedby="gesture-reason">
+              <g id="paper-scene">
+                <g id="paper-art"></g>
+                <g id="paper-handles"></g>
+                <g id="paper-preview" aria-hidden="true"></g>
+              </g>
+            </svg>
+          </div>
+          <div class="gesture-controls">
+            <div role="status" class="gesture-status">
+              <span id="gesture-status" class="status-pill" hidden></span>
+              <p id="gesture-reason"></p>
+            </div>
+            <button type="button" id="cancel-fold" class="button quiet" hidden>Cancel</button>
+            <button type="button" id="confirm-fold" class="button primary" hidden>Confirm fold</button>
           </div>
           <div class="sheet-footer">
             <div class="legend" id="legend"></div>
@@ -71,18 +89,25 @@
         </section>
 
         <aside class="sidebar" aria-label="Experiment controls">
-          <section class="card operations" aria-labelledby="fold-title">
-            <h2 id="fold-title">Next fold</h2>
-            <label for="candidate">Operation</label>
-            <select id="candidate"></select>
-            <div class="validation" id="validation" aria-live="polite">
-              <span class="status-pill" id="validation-status"></span>
-              <p id="validation-reason"></p>
+          <section class="card paper-styles" aria-labelledby="style-title">
+            <div class="ledger-header">
+              <h2 id="style-title">Paper style</h2>
+              <span id="style-name"></span>
             </div>
-            <button type="button" class="button primary" id="perform">
-              Apply fold
-            </button>
+            <div id="paper-styles" role="group" aria-label="Choose a paper style"></div>
           </section>
+          <details class="card operations" id="advanced">
+            <summary>Advanced Controls</summary>
+            <div class="advanced-fields">
+              <label for="candidate">Operation</label>
+              <select id="candidate"></select>
+              <div class="validation" id="validation" aria-live="polite">
+                <span class="status-pill" id="validation-status"></span>
+                <p id="validation-reason"></p>
+              </div>
+              <button type="button" class="button primary" id="perform">Apply fold</button>
+            </div>
+          </details>
 
           <section class="card ledger" aria-labelledby="history-title">
             <div class="ledger-header">

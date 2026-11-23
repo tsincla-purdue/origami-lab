@@ -14,19 +14,41 @@ npm ci
 npm run dev
 ```
 
-Open the address Vite prints. Choose an operation to preview its axis and moving
-side, then select **Apply fold**. The history records each attempt and its
-outcome. Click a history row, use **Undo** to move back one attempt, or **Replay**
-to play from the initial square. **Reset paper** returns to the initial square
-and preserves the history for replay. Continue folding from the latest step.
+Open the address Vite prints and choose a **Paper style**. In **Drag corner**
+mode, grab a marked corner with a mouse, finger, or pen and move it onto a new
+point. The dashed line is the perpendicular bisector of that motion. The
+shaded area shows the moving side, and the translucent paper shows the
+validated flat endpoint. Release to commit an accepted fold.
+
+In **Draw crease** mode, drag to draw the line, then click or tap the side of
+the paper to move. Select **Confirm fold** after checking the preview. Press
+**Escape** or use **Cancel** to discard a preview. Rejected and unverified
+gestures display the reason and leave the paper and history unchanged.
+
+**Snap to points** uses a screen-pixel tolerance around visible corners, edge
+midpoints, exposed intersections, and the center of the folded silhouette's
+bounds. A green ring marks the exact snap target. Turn off snapping for
+arbitrary destinations or hold **Alt** while using a mouse. Open **Advanced
+Controls** to preview and record the original command-based folds.
+
+Select a history row or use **Undo** to move back one attempt. **Replay** plays
+from the initial square, and **Reset paper** returns to it with the history
+available for replay. Continue folding from the latest step in **Folded** view.
 **New experiment** starts a fresh history. Presets load at their initial
-position and can be replayed or inspected one step at a time.
+position and keep the chosen paper style.
 
 **Export experiment** saves the complete experiment as JSON, even if the view is
 showing an earlier step. **Import** reconstructs and checks each step. Export
 before leaving the page to keep the history. **Export FOLD** writes the currently
 displayed snapshot, either a folded form or a crease pattern. The browser runs
 locally without a server-side service or a model.
+
+Paper styles are painted in the original sheet coordinates. Each facet carries
+its original polygon and pattern through every reflection. The renderer shows
+the appropriate face and draws upper layers over lower ones. The selected
+style is saved with the experiment and remembered as a local preference when
+storage is available. Older JSON files open with Classic white. FOLD export
+continues to describe geometry and layer order.
 
 ## Build for distribution
 
@@ -40,6 +62,11 @@ npm run preview
 The build type-checks the project and writes the browser application to `dist/`
 and the headless ES module to `dist/api/index.js`. `npm run preview` serves the
 built playground locally.
+
+For browser tests, install Chromium with `npx playwright install chromium`, then
+run `npm run test:browser`. The suite builds and serves the production files
+and exercises mouse and touch gestures. Set `ORIGAMI_CHROMIUM_PATH` to use a
+compatible Chromium executable already installed on your machine.
 
 To distribute the browser app, serve `dist/index.html` with `dist/assets/` and
 the `LICENSE`, `Origamio-LICENSE.txt`, and `THIRD-PARTY-NOTICES.txt` files in
