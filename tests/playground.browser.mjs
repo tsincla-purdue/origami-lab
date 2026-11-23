@@ -16,6 +16,16 @@ async function startMouseDrag(page, from, to) {
   await page.mouse.move(end.x, end.y, { steps: 8 });
 }
 
+async function dragCorner(page, from, to) {
+  await startMouseDrag(page, from, to);
+  await page.mouse.up();
+}
+
+async function tapCorner(page, point, offset = 0) {
+  const corner = await screenPoint(page, ...point);
+  await page.mouse.click(corner.x + offset, corner.y);
+}
+
 async function downloadJSON(page, name) {
   const [download] = await Promise.all([
     page.waitForEvent('download'), page.getByRole('button', {name, exact: true}).click(),
@@ -55,7 +65,7 @@ test('mouse drag previews a snapped fold and commits reflected, opaque stripes',
   await expect(page.locator('.corner-hover')).toBeVisible();
   await startMouseDrag(page, [0, 0], [.98, 0]);
   await expect(page.locator('.snap-active')).toBeVisible();
-  await expect(page.locator('.preview-side')).toBeVisible();
+  await expect(page.locator('.packet-moving')).toBeVisible();
   await expect(page.locator('#paper-preview .paper-facet[data-face="back"]')).toHaveCount(1);
   await expect(page.locator('#gesture-status')).toHaveText('accepted');
   await expect(page.locator('#history-count')).toHaveText('0 attempts');
@@ -96,6 +106,112 @@ test('a tap leaves the paper alone and a pen can place an unsnapped fold', async
   await expect(page.locator('.snap-active')).toHaveCount(0);
   await pen('mouseReleased', end);
   await expect(page.locator('#history-count')).toHaveText('1 attempt');
+});
+
+test('reset clears the experiment and a corner immediately makes an asymmetric dog-ear', async ({page}) => {
+  await page.getByRole('button', {name: 'Diagonal stripes'}).click();
+  await dragCorner(page, [1, 1], [.5, .5]);
+  await expect(page.locator('#sheet-caption')).toHaveText('2 facets · 1 fold');
+  const centered = await downloadJSON(page, 'Export experiment');
+  expect(centered.final.facets.at(-1).poly).toHaveLength(3);
+  await tapCorner(page, [0, 0]);
+  await page.getByRole('button', {name: 'Reset paper'}).click();
+  await expect(page.locator('#history-count')).toHaveText('0 attempts');
+  await expect(page.locator('#sheet-caption')).toHaveText('1 facet · 0 folds');
+  await expect(page.locator('#packet-status')).toBeEmpty();
+  await expect(page.locator('#gesture-status')).toBeHidden();
+  await expect(page.getByRole('button', {name: 'Replay', exact: true})).toBeDisabled();
+  await expect(page.locator('#style-name')).toHaveText('Diagonal stripes');
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await dragCorner(page, [1, 1], [.31, .58]);
+  await expect(page.locator('#history-count')).toHaveText('1 attempt');
+  const asymmetric = await downloadJSON(page, 'Export experiment');
+  expect(asymmetric.final.facets.at(-1).poly).toHaveLength(3);
+  expect(asymmetric.attempts[0].move.line).not.toEqual(centered.attempts[0].move.line);
+});
+
+test('a direct drag defaults to the top flap and an invalid partial drag leaves it fixed', async ({page, context}) => {
+  await dragCorner(page, [0, 1], [1, 1]);
+  await expect(page.locator('#packet-status')).toBeEmpty();
+  await startMouseDrag(page, [1, 1], [1, 0]);
+  await expect(page.locator('#packet-status')).toHaveText('1/2 layers');
+  await expect(page.locator('.packet-moving')).toHaveCount(1);
+  await expect(page.locator('#gesture-status')).toHaveText('rejected');
+  await page.mouse.up();
+  await expect(page.locator('#gesture-reason')).toContainText('shared material edges');
+  await expect(page.locator('#history-count')).toHaveText('1 attempt');
+
+  const start = await screenPoint(page, 1, 1);
+  const session = await context.newCDPSession(page);
+  const penTap = async () => {
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await session.send('Input.dispatchMouseEvent', {
+        type, ...start, pointerType: 'pen', button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1,
+      });
+    }
+  };
+  await penTap();
+  await expect(page.locator('#packet-status')).toHaveText('1/2 layers');
+  await penTap();
+  await expect(page.locator('#packet-status')).toHaveText('2/2 layers');
+  await tapCorner(page, [1, 0]);
+  await expect(page.locator('#packet-status')).toHaveText('1/2 layers');
+  await startMouseDrag(page, [1, 0], [.02, 0]);
+  await expect(page.locator('.snap-active')).toBeVisible();
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  await page.mouse.up();
+  await expect(page.locator('#packet-status')).toBeEmpty();
+  const experiment = await downloadJSON(page, 'Export experiment');
+  expect(experiment.attempts[1].validation.code).toBe('packet-fold');
+  expect(experiment.attempts[1].move.packet.facetIds).toEqual([1]);
+  expect(experiment.final.facets[0].transform).toEqual(experiment.attempts[0].state.facets[0].transform);
+});
+
+test('deliberate repeated taps wrap through a four-layer stack and hold the packet for a drag', async ({page}) => {
+  await dragCorner(page, [0, 1], [1, 1]);
+  await tapCorner(page, [1, 0]);
+  await tapCorner(page, [1, 0], 5);
+  await expect(page.locator('#packet-status')).toHaveText('2/2 layers');
+  await dragCorner(page, [1, 0], [1, 1]);
+  await expect(page.locator('#sheet-caption')).toHaveText('4 facets · 2 folds');
+
+  for (const count of [1, 2, 3, 4, 1, 2]) {
+    await tapCorner(page, [1, 1], count % 2 ? 0 : -6);
+    await expect(page.locator('#packet-status')).toHaveText(`${count}/4 layers`);
+    if (count === 1) await page.waitForTimeout(550);
+  }
+  await expect(page.locator('.packet-highlight')).toHaveCount(2);
+  await page.waitForTimeout(3600);
+  await dragCorner(page, [1, 1], [1, .02]);
+  await expect(page.locator('#history-count')).toHaveText('3 attempts');
+  const experiment = await downloadJSON(page, 'Export experiment');
+  expect(experiment.attempts[2].move.packet.facetIds).toEqual([2, 3]);
+  expect(experiment.attempts[2].validation.code).toBe('packet-fold');
+  await page.getByRole('button', {name: 'Undo', exact: true}).click();
+  await expect(page.locator('#sheet-caption')).toHaveText('4 facets · 2 folds');
+  await page.getByRole('button', {name: 'Replay', exact: true}).click();
+  await expect(page.locator('#sheet-caption')).toHaveText('4 facets · 3 folds');
+  expect(await downloadJSON(page, 'Export experiment')).toEqual(experiment);
+});
+
+test('keyboard packet controls also select the material for a drawn crease', async ({page}) => {
+  await dragCorner(page, [0, 1], [1, 1]);
+  await page.getByRole('combobox', {name: 'Corner', exact: true}).press('ArrowDown');
+  const layers = page.getByRole('combobox', {name: 'Layers', exact: true});
+  await layers.press('ArrowDown');
+  await expect(page.locator('#packet-status')).toHaveText('2/2 layers');
+  await layers.press('ArrowUp');
+  await page.getByRole('button', {name: 'Draw crease'}).click();
+  await expect(page.locator('#packet-status')).toHaveText('1/2 layers');
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await dragCorner(page, [.5, 0], [.5, 1]);
+  const movingSide = await screenPoint(page, .75, .5);
+  await page.mouse.click(movingSide.x, movingSide.y);
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  await page.getByRole('button', {name: 'Confirm fold'}).click();
+  const experiment = await downloadJSON(page, 'Export experiment');
+  expect(experiment.attempts[1].move.packet.facetIds).toEqual([1]);
+  expect(experiment.attempts[1].validation.code).toBe('packet-fold');
 });
 
 test('draw a crease, choose the moving side, confirm, undo and replay', async ({page}) => {
@@ -158,6 +274,13 @@ test.describe('touch', () => {
     await expect(page.locator('#gesture-status')).toHaveText('accepted');
     await touch('touchEnd');
     await expect(page.locator('#history-count')).toHaveText('1 attempt');
+
+    const top = await screenPoint(page, 1, 1);
+    for (const count of [1, 2]) {
+      await touch('touchStart', top);
+      await touch('touchEnd');
+      await expect(page.locator('#packet-status')).toHaveText(`${count}/2 layers`);
+    }
 
     const center = await screenPoint(page, .75, .5);
     const scroll = await page.evaluate(() => window.scrollY);

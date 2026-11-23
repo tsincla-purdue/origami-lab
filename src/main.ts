@@ -8,8 +8,8 @@ import {
 } from './lab';
 import type { Experiment, Move, PaperStyle, Validation } from './lab';
 import { MAX_EXPERIMENT_LENGTH } from './lab/experiment';
-import { connectGestures, draftMove, type Draft, type Tool } from './playground/gestures';
-import { cornerHandles, faceColor, paperMarkup, previewMarkup, styleSwatch } from './playground/paper-view';
+import { connectGestures, draftMove, type CornerSelection, type Draft, type Tool } from './playground/gestures';
+import { cornerHandles, faceColor, packetMarkup, paperMarkup, previewMarkup, styleSwatch } from './playground/paper-view';
 
 const get = <T extends HTMLElement | SVGElement = HTMLElement>(id: string) => document.getElementById(id) as unknown as T;
 const candidate = get<HTMLSelectElement>('candidate');
@@ -26,6 +26,8 @@ const advanced = get<HTMLDetailsElement>('advanced');
 const snapToggle = get<HTMLInputElement>('snap-toggle');
 const confirmFold = get<HTMLButtonElement>('confirm-fold');
 const cancelFold = get<HTMLButtonElement>('cancel-fold');
+const cornerControl = get<HTMLSelectElement>('packet-corner');
+const countControl = get<HTMLSelectElement>('packet-count');
 
 const styleKey = 'origami-lab.paper-style';
 function savedStyle(): PaperStyle {
@@ -51,6 +53,8 @@ let pending: Draft | undefined;
 let hoverCorner: Vec | undefined;
 let preview: ReturnType<typeof apply> | undefined;
 let gestureFeedback: Validation | undefined;
+let shownCorners: readonly Vec[] | undefined;
+let shownSelection: CornerSelection | undefined;
 
 const atTip = () => cursor === experiment.attempts.length && playback === undefined;
 const editable = () => atTip() && !creaseView;
@@ -95,7 +99,36 @@ function drawOverlay() {
     side: move.side,
   });
   const endpoint = preview?.validation.status === 'accepted' ? preview.state : undefined;
-  layer.innerHTML = previewMarkup(stateAt(experiment, cursor), guide, endpoint, hoverCorner, pixelUnit());
+  const state = stateAt(experiment, cursor);
+  const selection = gestures.selection();
+  const unit = pixelUnit();
+  layer.innerHTML = (selection ? packetMarkup(state, selection, guide, unit) : '') +
+    previewMarkup(state, guide, endpoint, hoverCorner, unit, !selection);
+}
+
+function displayPacketControls() {
+  const corners = gestures.availableCorners();
+  const selection = gestures.selection();
+  if (corners !== shownCorners) {
+    cornerControl.replaceChildren(new Option('Choose a corner', ''), ...corners.map(({x, y}, index) =>
+      new Option(`Corner ${index + 1} · (${x.toFixed(2)}, ${y.toFixed(2)})`, String(index))));
+    shownCorners = corners;
+  }
+  const current = selection ? corners.indexOf(selection.corner) : -1;
+  cornerControl.value = current < 0 ? '' : String(current);
+  cornerControl.disabled = !corners.length;
+  countControl.disabled = !selection;
+  if (selection !== shownSelection || !countControl.options.length) {
+    countControl.replaceChildren(...(selection ? [
+      ...selection.packets.map(({facetIds}) => new Option(String(facetIds.length))),
+      new Option('Whole stack', 'all'),
+    ] : [new Option('Choose a corner', '')]));
+  }
+  if (selection) countControl.value = String(selection.count);
+  const max = selection?.packets.at(-1)?.facetIds.length;
+  const text = selection?.count === 'all' ? 'Whole stack' : selection ? `${selection.count}/${max} layers` : '';
+  const status = get('packet-status');
+  if (status.textContent !== text) status.textContent = text;
 }
 
 function gestureStatus() {
@@ -108,7 +141,7 @@ function gestureStatus() {
   const message = verdict?.reason ?? (creaseView ? 'Switch to Folded to use the fold tools.' :
     !atTip() ? 'Return to the last history step to continue folding.' :
     pending ? 'Tap the side of the line you want to move.' :
-    tool === 'corner' ? 'Drag a marked corner onto a new point.' : 'Draw a crease, then tap the side to move.');
+    tool === 'corner' ? 'Tap a corner to select layers, then drag it onto a new point.' : 'Draw a crease, then tap the side to move.');
   const reason = get('gesture-reason');
   if (reason.textContent !== message) reason.textContent = message;
   confirmFold.hidden = pending?.tool !== 'crease' || pending.side === undefined;
@@ -119,11 +152,16 @@ function gestureStatus() {
 function showDraft(draft?: Draft, hover?: Vec) {
   pending = draft;
   hoverCorner = hover;
-  if (draft) gestureFeedback = undefined;
+  const selection = gestures.selection();
+  const selectionChanged = selection !== shownSelection;
+  if (draft || selectionChanged) gestureFeedback = undefined;
   const move = draft && draftMove(draft);
   preview = move && editable() ? apply(experiment.final, move) : undefined;
   drawOverlay();
   gestureStatus();
+  displayPacketControls();
+  shownSelection = selection;
+  if (selectionChanged && advanced.open) renderCandidate();
 }
 
 function clearGesture() {
@@ -156,14 +194,18 @@ function displayDrawing() {
   snapToggle.disabled = !editable();
   get('sheet-caption').textContent = `${state.facets.length} ${state.facets.length === 1 ? 'facet' : 'facets'} · ${state.foldCount} ${state.foldCount === 1 ? 'fold' : 'folds'}`;
   paper.setAttribute('aria-label', creaseView ? 'Unfolded paper and crease pattern' : 'Current folded paper');
+  // Keep the original square in the frame so a flap can open back into it.
   paper.setAttribute('viewBox', creaseView ? viewBox(state.width, state.height) :
-    cameraViewBox(state.size, fitCamera(state.size, foldedPoints(state))));
+    cameraViewBox(state.size, fitCamera(state.size, [
+      {x: 0, y: 0}, {x: state.width, y: state.height}, ...foldedPoints(state),
+    ])));
   get<SVGGElement>('paper-scene').setAttribute('transform', `translate(0 ${state.size}) scale(1 -1)`);
   get<SVGGElement>('paper-art').innerHTML = paperMarkup(state, style, creaseView);
   gestures.setContext(editable() ? state : undefined, tool);
   drawHandles();
   drawOverlay();
   gestureStatus();
+  displayPacketControls();
   const legend = get('legend');
   legend.style.setProperty('--paper-front', faceColor(style, 'front'));
   legend.style.setProperty('--paper-back', faceColor(style, 'back'));
@@ -185,8 +227,14 @@ function showValidation(validation: Validation | undefined, canAttempt: boolean)
   perform.textContent = canAttempt && validation?.status !== 'accepted' ? 'Record attempt' : 'Apply fold';
 }
 
-function renderCandidate() {
+function candidateMove() {
   const move = moves[candidate.selectedIndex];
+  const packet = gestures.packet();
+  return move && packet ? { ...move, packet } : move;
+}
+
+function renderCandidate() {
+  const move = candidateMove();
   const available = !candidate.disabled && move;
   const recorded = cursor > 0 ? experiment.attempts[cursor - 1].validation : undefined;
   showValidation(available ? validate(stateAt(experiment, cursor), move) : recorded, Boolean(available));
@@ -242,11 +290,10 @@ function render() {
   if (moves.length === 0) candidate.disabled = true;
 
   renderHistory();
-  renderCandidate();
   displayDrawing();
+  renderCandidate();
 
   undo.disabled = cursor === 0;
-  reset.disabled = cursor === 0;
   replay.disabled = experiment.attempts.length === 0;
   get('replay-label').textContent = playback === undefined ? 'Replay' : 'Pause';
 }
@@ -310,10 +357,17 @@ new ResizeObserver(() => {
   drawOverlay();
 }).observe(paper);
 candidate.addEventListener('change', renderCandidate);
-advanced.addEventListener('toggle', drawOverlay);
+advanced.addEventListener('toggle', renderCandidate);
 perform.addEventListener('click', () => {
-  const move = moves[candidate.selectedIndex];
+  const move = candidateMove();
   if (move) commitMove(move);
+});
+cornerControl.addEventListener('change', () => {
+  const corner = cornerControl.value === '' ? undefined : gestures.availableCorners()[Number(cornerControl.value)];
+  gestures.selectCorner(corner);
+});
+countControl.addEventListener('change', () => {
+  gestures.selectCount(countControl.value === 'all' ? 'all' : Number(countControl.value));
 });
 for (const mode of ['corner', 'crease'] as const) {
   get(`${mode}-tool`).addEventListener('click', () => {
@@ -328,7 +382,11 @@ document.addEventListener('keydown', event => { if (event.key === 'Escape') clea
 get('crease-view').addEventListener('click', () => { creaseView = true; clearGesture(); displayDrawing(); });
 get('folded-view').addEventListener('click', () => { creaseView = false; clearGesture(); displayDrawing(); });
 undo.addEventListener('click', () => seek(cursor - 1));
-reset.addEventListener('click', () => seek(0));
+reset.addEventListener('click', () => {
+  creaseView = false;
+  tool = 'corner';
+  replaceExperiment(createExperiment(experiment.appearance.paperStyle), 0);
+});
 replay.addEventListener('click', () => {
   if (playback !== undefined) {
     seek(cursor);

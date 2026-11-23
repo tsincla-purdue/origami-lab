@@ -2,7 +2,7 @@ import { add, clipPolygon, lineDirection, scale, type Polygon, type Vec } from '
 import { currentPolygon, isFlipped, type PaperState } from '../../vendor/origamio/src/paper';
 import type { PaperStyle } from '../lab';
 import { CORNER_HIT_RADIUS } from './geometry';
-import type { Draft } from './gestures';
+import type { CornerSelection, Draft } from './gestures';
 
 type Face = 'front' | 'back';
 type Ink = readonly [paper: string, motif: string];
@@ -90,7 +90,24 @@ export function cornerHandles(corners: readonly Vec[], unit: number): string {
 
 export type FoldGuide = Pick<Draft, 'line' | 'side'> & Partial<Pick<Draft, 'anchor' | 'destination' | 'snapped'>>;
 
-export function previewMarkup(state: PaperState, draft: FoldGuide | undefined, result: PaperState | undefined, hover: Vec | undefined, unit: number): string {
+export function packetMarkup(state: PaperState, selection: CornerSelection, draft: FoldGuide | undefined, unit: number): string {
+  const packet = selection.packets.find(choice => choice.facetIds.length === selection.count);
+  const selected = new Set(packet?.facetIds ?? state.facets.map(facet => facet.id));
+  const cutting = draft?.side !== undefined;
+  const highlights = state.facets.filter(facet => selected.has(facet.id)).map(facet => {
+    let poly = currentPolygon(facet);
+    if (cutting) {
+      const cut = clipPolygon(poly, draft.line);
+      poly = draft.side === 1 ? cut.positive : cut.negative;
+    }
+    return poly.length
+      ? `<polygon class="packet-highlight${cutting ? ' packet-moving' : ''}" data-facet-id="${facet.id}" points="${points(poly)}"/>`
+      : '';
+  }).join('');
+  return highlights + circle(selection.corner, 6 * unit, 'packet-anchor');
+}
+
+export function previewMarkup(state: PaperState, draft: FoldGuide | undefined, result: PaperState | undefined, hover: Vec | undefined, unit: number, shadeWhole = true): string {
   if (!draft) return hover ? circle(hover, 7 * unit, 'corner-hover') : '';
   const {line, side, anchor, destination, snapped} = draft;
   const parts: string[] = [];
@@ -98,7 +115,7 @@ export function previewMarkup(state: PaperState, draft: FoldGuide | undefined, r
   if (line) {
     const span = state.size * 16;
     const direction = scale(lineDirection(line), span);
-    if (side !== undefined) {
+    if (side !== undefined && shadeWhole) {
       const frame = [{x: -span, y: -span}, {x: span, y: -span}, {x: span, y: span}, {x: -span, y: span}];
       const cut = clipPolygon(frame, line);
       const moving = side === 1 ? cut.positive : cut.negative;

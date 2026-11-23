@@ -1,5 +1,7 @@
 export { apply, validate, propose, initialState, ENGINE_REVISION, NUMERICS } from './engine';
 export type { Move, PaperState, Validation } from './engine';
+export { cornerPackets } from './packets';
+export type { MaterialPacket } from './packets';
 export { createExperiment, recordMove, stateAt, importExperiment, serializeExperiment, setPaperStyle } from './experiment';
 export type { Experiment, Attempt } from './experiment';
 export { PAPER_STYLES, DEFAULT_PAPER_STYLE, isPaperStyle } from './paper-style';
