@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f6f5f9" />
+    <meta name="description" content="A programmable laboratory for exploring elementary paper folds." />
+    <title>Origami Lab · Folding playground</title>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="wordmark" href="./" aria-label="Origami Lab home">
+          <svg viewBox="0 0 32 32" width="32" height="32" aria-hidden="true">
+            <rect width="32" height="32" rx="9" fill="#4e39cd"/>
+            <path d="M6 23 13 9l5 6 8-4-5 12Z" fill="#eeeaff"/>
+            <path d="m13 9 1 14h-8Z" fill="#a89bf5"/>
+            <path d="m18 15 3 8h-7Z" fill="#c8bfff"/>
+          </svg>
+          Origami Lab
+        </a>
+        <div class="header-actions">
+          <button class="button quiet" id="import-button" type="button">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-4 4 4-4 4 4M5 15v5h14v-5"/></svg>
+            Import
+          </button>
+          <button class="button outlined" id="export-button" type="button">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v12m-4-4 4 4 4-4M5 16v4h14v-4"/></svg>
+            Export experiment
+          </button>
+          <input id="import-file" type="file" accept=".json,application/json" hidden />
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <div class="page-heading">
+        <div>
+          <h1>Folding playground</h1>
+          <p>Explore simple folds and replay how the sheet changes.</p>
+        </div>
+        <div class="preset-control">
+          <label for="preset">Presets</label>
+          <select id="preset"><option value="">Choose a construction</option></select>
+        </div>
+      </div>
+
+      <p id="notice" role="status" hidden></p>
+
+      <div class="workspace">
+        <section class="card sheet-card" aria-labelledby="paper-title">
+          <div class="sheet-header">
+            <div>
+              <h2 id="paper-title">Paper configuration</h2>
+              <span class="sheet-caption" id="sheet-caption"></span>
+            </div>
+            <div class="view-switch" role="group" aria-label="Paper view">
+              <button type="button" id="folded-view" aria-pressed="true">Folded</button>
+              <button type="button" id="crease-view" aria-pressed="false">Crease pattern</button>
+            </div>
+          </div>
+          <div class="drawing">
+            <span class="axis-label" aria-hidden="true">y ↑</span>
+            <svg id="paper" role="img" aria-label="Folded paper geometry"></svg>
+            <span class="x-axis-label" aria-hidden="true">x →</span>
+          </div>
+          <div class="sheet-footer">
+            <div class="legend" id="legend"></div>
+            <button type="button" id="fold-export" class="button quiet">Export FOLD</button>
+          </div>
+        </section>
+
+        <aside class="sidebar" aria-label="Experiment controls">
+          <section class="card operations" aria-labelledby="fold-title">
+            <h2 id="fold-title">Next fold</h2>
+            <label for="candidate">Operation</label>
+            <select id="candidate"></select>
+            <div class="validation" id="validation" aria-live="polite">
+              <span class="status-pill" id="validation-status"></span>
+              <p id="validation-reason"></p>
+            </div>
+            <button type="button" class="button primary" id="perform">
+              Apply fold
+            </button>
+          </section>
+
+          <section class="card ledger" aria-labelledby="history-title">
+            <div class="ledger-header">
+              <h2 id="history-title">Folding history</h2>
+              <span id="history-count"></span>
+            </div>
+            <ol id="history" aria-label="History positions"></ol>
+            <div class="history-controls" role="group" aria-label="History playback">
+              <button type="button" id="undo" class="button outlined" title="Undo one attempt">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5 4 10l5 5m-5-5h10a5 5 0 0 1 0 10"/></svg>Undo
+              </button>
+              <button type="button" id="replay" class="button outlined">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 11 7-11 7Z"/></svg><span id="replay-label">Replay</span>
+              </button>
+              <button type="button" id="reset" class="button quiet">Reset paper</button>
+            </div>
+          </section>
+        </aside>
+      </div>
+
+      <footer>
+        <span>Origamio engine <code>c289378</code> <span aria-hidden="true">·</span> Ideal zero-thickness paper</span>
+        <button type="button" class="button quiet" id="new-experiment">New experiment</button>
+      </footer>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
