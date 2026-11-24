@@ -1,5 +1,5 @@
 import {
-  EPS, add, apply, bounds, compose, cross, distance, dot, length, orientCCW, perpendicularBisector,
+  EPS, add, apply, bounds, compose, cross, distance, dot, length, lerp, orientCCW, perpendicularBisector,
   scale, sideOf, sub, type Line, type Mat, type Polygon, type Side, type Vec,
 } from '../../vendor/origamio/src/geometry';
 import { currentPolygon, type PaperState } from '../../vendor/origamio/src/paper';
@@ -51,6 +51,17 @@ function location(poly: Polygon, point: Vec): 'edge' | 'inside' | undefined {
   return onEdge ? 'edge' : 'inside';
 }
 
+function segmentIntersection(first: Line, second: Line): Vec | undefined {
+  const ab = sub(first.b, first.a);
+  const cd = sub(second.b, second.a);
+  const offset = sub(second.a, first.a);
+  const determinant = cross(ab, cd);
+  if (Math.abs(determinant) <= EPS * length(ab) * length(cd)) return;
+  const t = cross(offset, cd) / determinant;
+  const u = cross(offset, ab) / determinant;
+  if (t >= 0 && t <= 1 && u >= 0 && u <= 1) return lerp(first.a, first.b, t);
+}
+
 /** Stack order decides which projected corner can be picked at a shared screen position. */
 export function paperGeometry(state: PaperState) {
   const faces = [...state.facets].sort((a, b) => b.z - a.z).map(facet => ({
@@ -72,9 +83,12 @@ export function paperGeometry(state: PaperState) {
   };
   const visibleAt = (point: Vec, layer: number) =>
     !faces.slice(0, layer).some(({poly}) => location(poly, point) === 'inside');
-  const lines = faces.flatMap(({poly, creases}, layer) => [
-    ...creases, ...poly.map((a, i) => ({a, b: poly[(i + 1) % poly.length]})),
-  ].map(line => ({line, layer})));
+  const edges = faces.flatMap(({poly}, layer) =>
+    poly.map((a, i) => ({line: {a, b: poly[(i + 1) % poly.length]}, layer})));
+  const creaseLines = faces.flatMap(({creases}, layer) => creases.map(line => ({line, layer})));
+  // Keep the original per-layer search order so equal-distance O5 targets stay stable.
+  const lines = [...creaseLines, ...edges].sort((a, b) => a.layer - b.layer);
+  let references: Vec[] | undefined;
   return {
     corners,
     contains: (point: Vec) => hit(point) !== undefined,
@@ -85,6 +99,28 @@ export function paperGeometry(state: PaperState) {
       const marks = faces.flatMap(({creases}, layer) => creases.flatMap(({a, b}) =>
         [a, b, scale(add(a, b), .5)].filter(point => visibleAt(point, layer))));
       return [...corners, ...targets.map(({point}) => point), ...marks, center];
+    },
+    creasePoints() {
+      if (references) return references;
+      const points: Vec[] = [];
+      const include = (point: Vec) => {
+        if (!points.some(existing => distance(existing, point) <= EPS)) points.push(point);
+      };
+      for (const {line: {a, b}, layer} of lines) {
+        for (const point of [a, b, lerp(a, b, .5)]) {
+          if (visibleAt(point, layer)) include(point);
+        }
+      }
+      const includeIntersection = (first: typeof lines[number], second: typeof lines[number]) => {
+        const point = segmentIntersection(first.line, second.line);
+        if (point && visibleAt(point, Math.max(first.layer, second.layer))) include(point);
+      };
+      for (const [i, first] of creaseLines.entries()) {
+        for (const second of edges) includeIntersection(first, second);
+        for (let j = i + 1; j < creaseLines.length; j++) includeIntersection(first, creaseLines[j]);
+      }
+      references = points;
+      return references;
     },
     snapLine(screen: Vec, transform: Mat, radius: number) {
       let closest: {line: Line; point: Vec} | undefined;

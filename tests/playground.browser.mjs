@@ -107,6 +107,7 @@ test('mouse drag previews a snapped fold and commits reflected, opaque stripes',
   await expect(page.locator('.corner-hover')).toBeVisible();
   await startMouseDrag(page, [0, 0], [.98, 0]);
   await expect(page.locator('.snap-active')).toBeVisible();
+  await expect(page.locator('.crease-snap-reference')).toHaveCount(0);
   await expect(page.locator('.packet-moving')).toBeVisible();
   await expect(page.locator('#paper-preview .paper-facet[data-face="back"]')).toHaveCount(1);
   await expect(page.locator('#gesture-status')).toHaveText('accepted');
@@ -118,6 +119,96 @@ test('mouse drag previews a snapped fold and commits reflected, opaque stripes',
   expect(await paperPixels(page, [[.795, .205], [.8, .175]])).toEqual([
     [120, 46, 55, 255], [229, 152, 119, 255],
   ]);
+});
+
+async function expectTwoPointPreview(page) {
+  await expect(page.locator('.preview-line.crease-snapped')).toBeVisible();
+  const references = await page.locator('.crease-snap-reference').evaluateAll(circles =>
+    circles.map(circle => [Number(circle.getAttribute('cx')), Number(circle.getAttribute('cy'))]));
+  expect(references.sort()).toEqual([[0, .5], [1, 1]]);
+  const landing = page.locator('.drag-destination');
+  expect(Number(await landing.getAttribute('cx'))).toBeCloseTo(.4, 12);
+  expect(Number(await landing.getAttribute('cy'))).toBeCloseTo(.2, 12);
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+}
+
+test('mouse drag snaps the crease through a vertex and midpoint and records the exact reflection', async ({page}) => {
+  await dragCorner(page, [1, 0], [0, 0]);
+  await page.getByRole('button', {name: 'Unfold', exact: true}).click();
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await startMouseDrag(page, [0, 1], [.418, .21]);
+  await expectTwoPointPreview(page);
+  for (const [x, y] of [[.396, .181], [.421, .219], [.401, .193]]) {
+    const point = await screenPoint(page, x, y);
+    await page.mouse.move(point.x, point.y);
+    await expectTwoPointPreview(page);
+  }
+  await page.mouse.up();
+  const experiment = await downloadJSON(page, 'Export experiment');
+  const {move, validation} = experiment.attempts.at(-1);
+  expect([...move.line].sort()).toEqual([[0, .5], [1, 1]]);
+  expect(validation.status).toBe('accepted');
+  const [fixed, flap] = experiment.final.facets;
+  const project = ({transform: {a, b, c, d, e, f}}, [x, y]) =>
+    [a * x + c * y + e, b * x + d * y + f];
+  expect(flap.z).toBeGreaterThan(fixed.z);
+  expect(flap.poly).toContainEqual({x: 0, y: 1});
+  const [x, y] = project(flap, [0, 1]);
+  expect(x).toBeCloseTo(.4, 12);
+  expect(y).toBeCloseTo(.2, 12);
+  for (const point of move.line) {
+    const [fx, fy] = project(flap, point);
+    const [sx, sy] = project(fixed, point);
+    expect(Math.hypot(fx - sx, fy - sy)).toBeLessThan(1e-12);
+  }
+  await verifyReplayAndUndo(page, experiment);
+});
+
+test('the existing snapping toggle leaves a nearby two-point crease unsnapped', async ({page}) => {
+  await page.getByLabel('Snap to points').uncheck();
+  await startMouseDrag(page, [0, 1], [.418, .21]);
+  await expect(page.locator('.preview-line')).toBeVisible();
+  await expect(page.locator('.crease-snap-reference')).toHaveCount(0);
+  expect(Number(await page.locator('.drag-destination').getAttribute('cx'))).toBeCloseTo(.418, 2);
+  await page.mouse.up();
+  await expect(page.locator('#history-count')).toHaveText('1 attempt');
+});
+
+test('mouse jitter toward a competing line keeps the acquired two-point crease', async ({page}) => {
+  const snapping = page.getByLabel('Snap to points');
+  await snapping.uncheck();
+  const bottom = await screenPoint(page, 0, 0);
+  const top = await screenPoint(page, 0, 1);
+  const height = .5 + 9 / (bottom.y - top.y);
+  await dragCorner(page, [0, 0], [0, 2 * height]);
+  const setup = await downloadJSON(page, 'Export experiment');
+  const reference = setup.final.creases[0].a.y;
+  expect(reference).toBeGreaterThan(.5);
+  await page.getByRole('button', {name: 'Unfold', exact: true}).click();
+  await snapping.check();
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+
+  // The visible left endpoint of the retained crease, together with the
+  // upper-right vertex, defines a nearby rival for the edge-midpoint line.
+  const rise = 1 - reference;
+  const rivalX = 2 * rise ** 2 / (1 + rise ** 2);
+  const rivalY = 1 - 2 * rise / (1 + rise ** 2);
+  const rival = await screenPoint(page, rivalX, rivalY);
+  await startMouseDrag(page, [0, 1], [.4, .2]);
+  await expectTwoPointPreview(page);
+  await page.mouse.move(rival.x, rival.y);
+  await expectTwoPointPreview(page);
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
+
+  const anchor = await screenPoint(page, 0, 1);
+  await page.mouse.move(anchor.x, anchor.y);
+  await page.mouse.down();
+  await page.mouse.move(rival.x, rival.y);
+  const edgeReference = page.locator('.crease-snap-reference[cx="0"]');
+  await expect(edgeReference).toHaveAttribute('cy', String(reference));
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
 });
 
 test('pointer capture tracks an outside drag and rejects it without changing history', async ({page}) => {
@@ -637,6 +728,24 @@ test('paper preference survives reload and presets, and round-trips through expo
 test.describe('touch', () => {
   const { defaultBrowserType, ...touchDevice } = devices['iPhone 13'];
   test.use(touchDevice);
+
+  test('touch drag snaps the crease and commits the exact reflected landing', async ({page, context}) => {
+    const session = await context.newCDPSession(page);
+    const touch = (type, point) => session.send('Input.dispatchTouchEvent', {
+      type, touchPoints: point ? [point] : [],
+    });
+    await touch('touchStart', await screenPoint(page, 0, 1));
+    await touch('touchMove', await screenPoint(page, .425, .215));
+    await expectTwoPointPreview(page);
+    await touch('touchEnd');
+    const experiment = await downloadJSON(page, 'Export experiment');
+    const {move, validation} = experiment.attempts[0];
+    expect([...move.line].sort()).toEqual([[0, .5], [1, 1]]);
+    expect(validation.status).toBe('accepted');
+    const {c, d, e, f} = experiment.final.facets.at(-1).transform;
+    expect(c + e).toBeCloseTo(.4, 12);
+    expect(d + f).toBeCloseTo(.2, 12);
+  });
 
   test('touch hold and drag fold onto a crease without confirmation controls', async ({page, context}) => {
     const session = await context.newCDPSession(page);

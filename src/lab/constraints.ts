@@ -1,5 +1,5 @@
 import {
-  EPS, add, distance, dot, length, perpendicularBisector, scale, sideOf, signedDistance, sub,
+  EPS, add, apply, distance, dot, length, perpendicularBisector, reflection, scale, sideOf, signedDistance, sub,
   type Line, type Side, type Vec,
 } from '../../vendor/origamio/src/geometry';
 
@@ -13,6 +13,24 @@ export interface ConstraintResult {
   readonly status: 'solved' | 'no-solution' | 'unverified';
   readonly solutions: readonly ConstraintSolution[];
   readonly reason: string;
+}
+
+/** O1: keep two reference points fixed and reflect the moving point through their line. */
+export function solveCreaseThroughPoints(moving: Vec, a: Vec, b: Vec): ConstraintResult {
+  const extent = distance(a, b);
+  if (!Number.isFinite(extent) || extent <= EPS) {
+    return {status: 'unverified', reason: 'Choose two distinct crease reference points.', solutions: []};
+  }
+  const line = {a, b};
+  const destination = apply(reflection(line), moving);
+  const travel = distance(moving, destination);
+  if (!Number.isFinite(travel)) {
+    return {status: 'unverified', reason: 'The reflected point is outside the numerical range.', solutions: []};
+  }
+  if (Math.abs(signedDistance(line, moving)) <= EPS || travel <= EPS) {
+    return {status: 'no-solution', reason: 'The moving point already lies on the crease.', solutions: []};
+  }
+  return {status: 'solved', reason: '', solutions: [{line, destination, side: sideOf(line, moving)}]};
 }
 
 /** Intersect the circle centred at pin through moving with a line or its finite segment. */

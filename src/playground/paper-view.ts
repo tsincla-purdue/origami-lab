@@ -101,7 +101,7 @@ export function cornerHandles(corners: readonly Vec[], unit: number): string {
     circle(point, CORNER_HIT_RADIUS * unit, 'corner-touch') + circle(point, 3.75 * unit, 'corner-dot')).join('');
 }
 
-export type FoldGuide = Pick<Draft, 'line' | 'side'> & Partial<Pick<Draft, 'anchor' | 'destination' | 'snapped'>>;
+export type FoldGuide = Pick<Draft, 'line' | 'side'> & Partial<Pick<Draft, 'anchor' | 'destination' | 'snapped' | 'creaseSnapped'>>;
 
 export function packetMarkup(state: PaperState, selection: CornerSelection, draft: FoldGuide | undefined, unit: number, inferred?: MaterialPacket): string {
   const packet = inferred ?? selection.packets.find(choice => choice.facetIds.length === selection.count);
@@ -122,7 +122,7 @@ export function packetMarkup(state: PaperState, selection: CornerSelection, draf
 
 export function previewMarkup(state: PaperState, draft: FoldGuide | undefined, result: PaperState | undefined, hover: Vec | undefined, unit: number, shadeWhole = true): string {
   if (!draft) return hover ? circle(hover, 7 * unit, 'corner-hover') : '';
-  const {line, side, anchor, destination, snapped} = draft;
+  const {line, side, anchor, destination, snapped, creaseSnapped} = draft;
   const parts: string[] = [];
   if (result) parts.push(`<g class="fold-endpoint">${foldedFacets(result)}</g>`);
   if (line) {
@@ -134,10 +134,14 @@ export function previewMarkup(state: PaperState, draft: FoldGuide | undefined, r
       const moving = side === 1 ? cut.positive : cut.negative;
       parts.unshift(`<polygon class="preview-side" clip-path="url(#paper-silhouette)" points="${points(moving)}"/>`);
     }
-    parts.push(segment(add(line.a, scale(direction, -1)), add(line.a, direction), 'preview-line'));
+    parts.push(segment(add(line.a, scale(direction, -1)), add(line.a, direction),
+      creaseSnapped ? 'preview-line crease-snapped' : 'preview-line'));
   }
   if (anchor) parts.push(circle(anchor, 6 * unit, 'drag-anchor'));
   if (destination) parts.push(circle(destination, 5 * unit, 'drag-destination'));
   for (const p of snapped ?? []) parts.push(circle(p, 9 * unit, 'snap-active'));
+  if (creaseSnapped) {
+    for (const p of [line.a, line.b]) parts.push(circle(p, 9 * unit, 'snap-active crease-snap-reference'));
+  }
   return parts.join('');
 }
