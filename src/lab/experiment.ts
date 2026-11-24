@@ -1,13 +1,19 @@
-import { ENGINE_REVISION, NUMERICS, apply, deepFreeze, initialState, type Move, type PaperState, type Validation } from './engine';
+import { ENGINE_REVISION, NUMERICS, apply, deepFreeze, initialState, reverseFold, type Move, type PaperState, type Validation } from './engine';
 import { DEFAULT_PAPER_STYLE, isPaperStyle, type PaperStyle } from './paper-style';
 
-export interface Attempt {
-  readonly move: Move;
+export type Attempt = {
   readonly validation: Validation;
   readonly state: PaperState;
+} & ({
+  readonly operation?: never;
+  readonly move: Move;
   /** Preserve a historical clearance decision while later attempts use the current validator. */
   readonly validatorVersion?: 1;
-}
+} | {
+  readonly operation: 'unfold';
+  readonly move: { readonly foldAttempt: number; readonly label: 'Unfold' };
+  readonly validatorVersion?: never;
+});
 
 export interface Experiment {
   readonly format: 'origami-lab';
@@ -54,10 +60,34 @@ function appendMove(experiment: Experiment, move: Move, validatorVersion?: 1): E
   const result = apply(experiment.final, snapshot, validatorVersion);
   const retainsClearance = validatorVersion === 1 && result.validation.code === 'hinge-cover';
   const attempt: Attempt = { move: snapshot, ...result, ...(retainsClearance && {validatorVersion}) };
-  return deepFreeze({
-    ...experiment,
-    attempts: [...experiment.attempts, attempt],
-    final: result.state,
+  return appendAttempt(experiment, attempt);
+}
+
+function appendAttempt(experiment: Experiment, attempt: Attempt): Experiment {
+  return deepFreeze({ ...experiment, attempts: [...experiment.attempts, attempt], final: attempt.state });
+}
+
+function unfoldSource(experiment: Experiment): number | undefined {
+  for (let i = experiment.attempts.length - 1; i >= 0; i--) {
+    const attempt = experiment.attempts[i];
+    if (attempt.validation.status !== 'accepted') continue;
+    if (!attempt.operation && attempt.state === experiment.final) return i + 1;
+    break;
+  }
+}
+
+export function canUnfold(experiment: Experiment): boolean {
+  return experiment.attempts.length < MAX_ATTEMPTS && unfoldSource(experiment) !== undefined;
+}
+
+export function recordUnfold(experiment: Experiment): Experiment {
+  if (experiment.attempts.length >= MAX_ATTEMPTS) throw new Error(`An experiment can contain up to ${MAX_ATTEMPTS} attempts.`);
+  const foldAttempt = unfoldSource(experiment);
+  const state = foldAttempt === undefined ? undefined : reverseFold(experiment.final);
+  if (!state || foldAttempt === undefined) throw new Error('The latest state is not the result of a reversible fold.');
+  return appendAttempt(experiment, {
+    operation: 'unfold', move: { foldAttempt, label: 'Unfold' }, state,
+    validation: { status: 'accepted', code: 'unfold', reason: 'Reversed the last fold and retained its material creases.' },
   });
 }
 
@@ -119,7 +149,16 @@ export function importExperiment(text: string): Experiment {
         (entry.validatorVersion !== 1 || entry.validation?.code !== 'hinge-cover')) {
       throw new Error(`Invalid validator version at attempt ${index + 1}.`);
     }
-    replay = appendMove(replay, entry.move, legacy ? 1 : entry.validatorVersion);
+    if (entry.operation === 'unfold') {
+      if (legacy || unfoldSource(replay) !== entry.move.foldAttempt || !canUnfold(replay)) {
+        throw new Error(`Invalid unfold source at attempt ${index + 1}.`);
+      }
+      replay = recordUnfold(replay);
+      if (!matches(replay.attempts[index].move, entry.move)) throw new Error(`Invalid unfold at attempt ${index + 1}.`);
+    } else {
+      if (entry.operation !== undefined) throw new Error(`Unknown operation at attempt ${index + 1}.`);
+      replay = appendMove(replay, entry.move, legacy ? 1 : entry.validatorVersion);
+    }
     const actual = replay.attempts[index];
     if (!matches(actual.validation, entry.validation) || !matches(actual.state, entry.state)) {
       throw new Error(`Validation or state mismatch at attempt ${index + 1}.`);

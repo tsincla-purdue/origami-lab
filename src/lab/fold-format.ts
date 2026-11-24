@@ -1,9 +1,10 @@
 import {
-  apply as mapPoint, area, distance, dot, intersectConvex, orientCCW, signedDistance, sub,
+  apply as mapPoint, area, clipPolygon, distance, dot, intersectConvex, orientCCW, signedDistance, sub,
   type Vec,
 } from '../../vendor/origamio/src/geometry';
 import { currentPolygon, isFlipped } from '../../vendor/origamio/src/paper';
 import { NUMERICS, type PaperState } from './engine';
+import { clipCrease } from './crease-references';
 
 type IndexPair = [number, number];
 type FaceOrder = [number, number, 1 | -1];
@@ -12,8 +13,24 @@ type Assignment = 'B' | 'F' | 'M' | 'V';
 const { auditDistance, auditArea } = NUMERICS;
 const coords = ({ x, y }: Vec): [number, number] => [x, y];
 
+/** Represent retained creases as flat edges without changing the physical fold state. */
+function exportMesh(state: PaperState) {
+  let facets = state.facets;
+  for (const crease of state.creases) {
+    const refined = facets.flatMap(facet => {
+      if (!clipCrease(crease, facet.poly)) return [facet];
+      const {positive, negative} = clipPolygon(facet.poly, crease);
+      if (positive.length && negative.length) return [{...facet, poly: positive}, {...facet, poly: negative}];
+      return [facet];
+    });
+    if (refined.length !== facets.length) facets = refined;
+  }
+  return facets;
+}
+
 /** Export a single interoperable frame or a crease pattern with a folded child. */
 export function exportFold(state: PaperState, kind: FrameKind | 'both' = 'both') {
+  const facets = exportMesh(state);
   const material: Vec[] = [];
   const vertex = (point: Vec) => {
     const index = material.findIndex(other => distance(point, other) <= auditDistance);
@@ -21,7 +38,13 @@ export function exportFold(state: PaperState, kind: FrameKind | 'both' = 'both')
     return material.push(point) - 1;
   };
   // Collect vertex IDs in material coordinates before building conforming edges.
-  const polygons = state.facets.map(facet => orientCCW(facet.poly).map(vertex));
+  const polygons = facets.map(facet => orientCCW(facet.poly).map(vertex));
+  if (facets !== state.facets) {
+    for (const {a, b} of state.creases) {
+      vertex(a);
+      vertex(b);
+    }
+  }
   const faces_vertices = polygons.map(ids => ids.flatMap((id, i) => {
     const next = ids[(i + 1) % ids.length];
     const a = material[id];
@@ -42,7 +65,7 @@ export function exportFold(state: PaperState, kind: FrameKind | 'both' = 'both')
     if (vertices.length < 3 || new Set(vertices).size !== vertices.length) {
       throw new Error('The material mesh contains a degenerate face.');
     }
-    const facet = state.facets[face];
+    const facet = facets[face];
     vertices.forEach((id, index) => {
       const image = mapPoint(facet.transform, material[id]);
       if (folded[id] && distance(folded[id], image) > auditDistance) {
@@ -60,7 +83,7 @@ export function exportFold(state: PaperState, kind: FrameKind | 'both' = 'both')
   const edges_assignment: Assignment[] = [];
   const edges_foldAngle: number[] = [];
   for (const edge of edges.values()) {
-    const [p, q] = edge.faces.map(index => state.facets[index]);
+    const [p, q] = edge.faces.map(index => facets[index]);
     if (edge.faces.length > 2) throw new Error('An edge has more than two incident faces.');
     edges_vertices.push(edge.vertices);
     const assignment = !q ? 'B' : isFlipped(p) === isFlipped(q) ? 'F' :
@@ -70,11 +93,11 @@ export function exportFold(state: PaperState, kind: FrameKind | 'both' = 'both')
   }
 
   const faceOrders: FaceOrder[] = [];
-  const projected = state.facets.map(currentPolygon);
-  for (const [i, a] of state.facets.entries()) {
+  const projected = facets.map(currentPolygon);
+  for (const [i, a] of facets.entries()) {
     for (let j = i + 1; j < projected.length; j++) {
       if (area(intersectConvex(projected[i], projected[j])) <= auditArea) continue;
-      const b = state.facets[j];
+      const b = facets[j];
       if (a.z === b.z) throw new Error('An overlapping face pair has no distinct stack order.');
       const sign = (a.z > b.z) === !isFlipped(b) ? 1 : -1;
       faceOrders.push([i, j, sign]);
