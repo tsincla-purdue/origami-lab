@@ -102,6 +102,107 @@ test.beforeEach(async ({page}) => {
   await page.locator('#paper').scrollIntoViewIfNeeded();
 });
 
+test('turns a two-tone half-fold over, folds the exposed layer, and turns it back', async ({page}) => {
+  const flip = page.getByRole('button', {name: 'Flip over', exact: true});
+  const unfold = page.getByRole('button', {name: 'Unfold', exact: true});
+  await page.getByRole('button', {name: 'Two-tone'}).click();
+  await dragCorner(page, [1, 0], [0, 0]);
+  const before = await renderedFacets(page);
+  expect(before.map(({id, face}) => [id, face])).toEqual([[0, 'front'], [1, 'back']]);
+  const half = await downloadJSON(page, 'Export experiment');
+  await flip.click({timeout: 4000});
+  await expect(flip).toHaveAttribute('aria-pressed', 'true');
+  expect((await renderedFacets(page)).map(({id, face}) => [id, face])).toEqual([[1, 'front'], [0, 'back']]);
+  const turned = await downloadJSON(page, 'Export experiment');
+  expect(turned.attempts[1]).toMatchObject({operation: 'flip', move: {axisX: .25}});
+  expect(turned.final.facets).toEqual(half.final.facets);
+  expect(turned.final.creases).toEqual(half.final.creases);
+  await expect(unfold).toBeEnabled();
+
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await startMouseDrag(page, [.5, 1], [.15, 1]);
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  await expect(page.locator('.packet-moving')).toHaveCount(1);
+  await expect(page.locator('.packet-moving')).toHaveAttribute('data-facet-id', '0');
+  await page.mouse.up();
+  const folded = await downloadJSON(page, 'Export experiment');
+  expect(folded.attempts[2].move.packet).toEqual({facetIds: [0]});
+  const {poly, transform} = half.final.facets[1];
+  expect(folded.final.facets.find(({id}) => id === 1)).toMatchObject({poly, transform});
+  expect((await renderedFacets(page)).map(({id}) => id)).toEqual([1, 0, 2]);
+  await unfold.click();
+  expect(await renderedFacets(page)).toEqual([
+    {...before[1], face: 'front', transform: 'matrix(1 0 0 1 -0.5 0)'},
+    {...before[0], face: 'back', transform: 'matrix(-1 0 0 1 0.5 0)'},
+  ]);
+  await flip.click();
+  await expect(flip).toHaveAttribute('aria-pressed', 'false');
+  expect(await renderedFacets(page)).toEqual(before);
+  const complete = await downloadJSON(page, 'Export experiment');
+  expect(complete.final.facets).toEqual(half.final.facets);
+  expect(complete.final.creases).toEqual(folded.final.creases);
+  await verifyReplayAndUndo(page, complete);
+  await expect(flip).toHaveAttribute('aria-pressed', 'true');
+  await expect(unfold).toBeEnabled();
+});
+
+test('a stylus turns a dog-ear over as one object and exposes its opposite pigment', async ({page, context}) => {
+  await page.getByRole('button', {name: 'Two-tone'}).click();
+  await dragCorner(page, [1, 1], [.5, .5]);
+  const before = await renderedFacets(page);
+  expect(await paperPixels(page, [[.2, .2]])).toEqual([[239, 171, 130, 255]]);
+  const flip = page.getByRole('button', {name: 'Flip over', exact: true});
+  await flip.scrollIntoViewIfNeeded();
+  const box = await flip.boundingBox();
+  const session = await context.newCDPSession(page);
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    await session.send('Input.dispatchMouseEvent', {
+      type, pointerType: 'pen', x: box.x + box.width / 2, y: box.y + box.height / 2,
+      button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1,
+    });
+  }
+  await expect(flip).toHaveAttribute('aria-pressed', 'true');
+  expect((await renderedFacets(page)).map(({id, face, points}) => ({id, face, points}))).toEqual(
+    [...before].reverse().map(({id, face, points}) => ({id, points, face: face === 'front' ? 'back' : 'front'})),
+  );
+  expect(await paperPixels(page, [[.8, .2]])).toEqual([[93, 82, 110, 255]]);
+  const file = await downloadJSON(page, 'Export experiment');
+  expect(file.final.facets).toEqual(file.attempts[0].state.facets);
+  expect(file.final.creases).toEqual(file.attempts[0].state.creases);
+  await page.getByRole('button', {name: 'Diagonal stripes'}).click();
+  // The stripe at material (.2, .2) mirrors with the sheet.
+  expect(await paperPixels(page, [[.8, .2], [.75, .2]])).toEqual([
+    [120, 46, 55, 255], [229, 152, 119, 255],
+  ]);
+  await flip.click();
+  expect(await renderedFacets(page)).toEqual(before);
+});
+
+test('edge alignment and a pinned perpendicular still fold the exposed side after turnover', async ({page}) => {
+  const flip = page.getByRole('button', {name: 'Flip over', exact: true});
+  await flip.click();
+  await startMouseDrag(page, [.62, 0], [.012, .61]);
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  await expect(page.locator('.constraint-source')).toHaveCount(1);
+  await page.mouse.up();
+  await expect(page.locator('#history li').last()).toContainText('Align lines');
+  await page.getByRole('button', {name: 'Unfold', exact: true}).click();
+  await expect(flip).toHaveAttribute('aria-pressed', 'true');
+  const pin = await screenPoint(page, .5, 1);
+  await page.mouse.move(pin.x, pin.y);
+  await page.mouse.down();
+  await expect(page.locator('.pin-anchor')).toHaveAttribute('cx', '0.5');
+  await page.mouse.up();
+  await startMouseDrag(page, [.23, 0], [.77, .011]);
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  await page.mouse.up();
+  await expect(page.locator('#history li').last()).toContainText('Perpendicular through point');
+  const file = await downloadJSON(page, 'Export experiment');
+  expect(file.attempts.at(-1).move.line.map(([x]) => x)).toEqual([.5, .5]);
+  expect(file.final.pose).toEqual(file.attempts[0].state.pose);
+  expect((await renderedFacets(page)).map(({id, face}) => [id, face])).toEqual([[0, 'back'], [2, 'front']]);
+});
+
 test('mouse drag previews a snapped fold and commits reflected, opaque stripes', async ({page}) => {
   await page.getByRole('button', {name: 'Diagonal stripes'}).click();
   const start = await screenPoint(page, 0, 0);
@@ -941,6 +1042,62 @@ test('paper preference survives reload and presets, and round-trips through expo
 test.describe('touch', () => {
   const { defaultBrowserType, ...touchDevice } = devices['iPhone 13'];
   test.use(touchDevice);
+
+  test('touch flips a marked sheet and uses the mirrored point for snapping and pinning', async ({page, context}) => {
+    const session = await context.newCDPSession(page);
+    const event = (type, point) => session.send('Input.dispatchTouchEvent', {type, touchPoints: point ? [point] : []});
+    const unfold = page.getByRole('button', {name: 'Unfold', exact: true});
+    const flip = page.getByRole('button', {name: 'Flip over', exact: true});
+    const dot = page.locator('#paper-marks .material-mark');
+    const fold = async (from, to, snapped) => {
+      await page.locator('#paper').scrollIntoViewIfNeeded();
+      await event('touchStart', await screenPoint(page, ...from));
+      await event('touchMove', await screenPoint(page, ...to));
+      await expect(page.locator('#gesture-status')).toHaveText('accepted');
+      if (snapped) {
+        await expect(page.locator('.drag-destination')).toHaveAttribute('cx', String(snapped[0]));
+        await expect(page.locator('.drag-destination')).toHaveAttribute('cy', String(snapped[1]));
+      }
+      await event('touchEnd');
+    };
+    await fold([0, 0], [.64, 0]);
+    await unfold.tap();
+    await fold([0, 1], [0, 0]);
+    await unfold.tap();
+    const scored = await downloadJSON(page, 'Export experiment');
+    const x = scored.final.creases[0].a.x;
+    await page.locator('#paper').scrollIntoViewIfNeeded();
+    const crossing = await screenPoint(page, x, .5);
+    await page.touchscreen.tap(crossing.x + 5, crossing.y + 4);
+    await page.getByRole('button', {name: 'Mark point', exact: true}).tap();
+    const marked = await downloadJSON(page, 'Export experiment');
+    const {point} = marked.final.marks[0];
+    await flip.tap();
+    await expect(flip).toHaveAttribute('aria-pressed', 'true');
+    const exposedX = 1 - point.x;
+    await expect(dot).toHaveAttribute('cx', String(exposedX));
+    await fold([1, 1], [exposedX + .016, point.y + .024], [exposedX, point.y]);
+    expect((await downloadJSON(page, 'Export experiment')).final.marks).toEqual(marked.final.marks);
+    await unfold.tap();
+
+    await page.locator('#paper').scrollIntoViewIfNeeded();
+    const pin = await screenPoint(page, exposedX, point.y);
+    await event('touchStart', {x: pin.x + 10, y: pin.y + 9});
+    await expect(page.locator('.pin-anchor')).toHaveAttribute('cx', String(exposedX));
+    await event('touchEnd');
+    const landingX = exposedX - Math.hypot(1 - exposedX, point.y);
+    await event('touchStart', await screenPoint(page, 1, 0));
+    await event('touchMove', await screenPoint(page, landingX + .012, point.y));
+    await expect(page.locator('#gesture-status')).toHaveText('accepted');
+    expect(Number(await page.locator('.drag-destination').getAttribute('cx'))).toBeCloseTo(landingX, 12);
+    await event('touchEnd');
+    const result = await downloadJSON(page, 'Export experiment');
+    expect(result.attempts.at(-1).move.label).toBe('Point onto line');
+    expect(result.final.marks).toEqual(marked.final.marks);
+    await unfold.tap();
+    await flip.tap();
+    await expect(dot).toHaveAttribute('cx', String(point.x));
+  });
 
   test('touch aligns opposite parallel edges at the exact halfway line', async ({page, context}) => {
     const session = await context.newCDPSession(page);

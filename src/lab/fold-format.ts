@@ -5,6 +5,7 @@ import {
 import { currentPolygon, isFlipped } from '../../vendor/origamio/src/paper';
 import { NUMERICS, type PaperState } from './engine';
 import { clipCrease } from './crease-references';
+import { paperTransform } from './paper-pose';
 
 type IndexPair = [number, number];
 type FaceOrder = [number, number, 1 | -1];
@@ -115,7 +116,12 @@ export function exportFold(state: PaperState, kind: FrameKind | 'both' = 'both')
     faces_vertices,
   };
   const crease = { frame_classes: ['creasePattern'], vertices_coords: material.map(coords) };
-  const form = { frame_classes: ['foldedForm'], vertices_coords: folded.map(coords), edges_foldAngle, faceOrders };
+  const pose = paperTransform(state.pose);
+  // A turnover reverses both face normals and stack order, preserving their relative FOLD signs.
+  const form = {
+    frame_classes: ['foldedForm'], vertices_coords: folded.map(point => coords(mapPoint(pose, point))),
+    edges_foldAngle, faceOrders,
+  };
   if (kind === 'creasePattern') return { ...base, ...crease };
   if (kind === 'foldedForm') return { ...base, ...form };
   return { ...base, ...crease, file_frames: [{ ...form, frame_parent: 0, frame_inherit: true }] };

@@ -2,6 +2,7 @@ import {
   EPS, apply, containsPoint, cross, distance, length, lerp, sub, type Line, type Vec,
 } from '../../vendor/origamio/src/geometry';
 import { currentPolygon, type PaperState } from '../../vendor/origamio/src/paper';
+import { paperInView, type PaperState as LabPaperState } from './paper-pose';
 
 export interface MaterialMark {
   readonly id: number;
@@ -51,7 +52,8 @@ export function materialIntersections(state: PaperState, near: Vec, radius: numb
 }
 
 /** A mark belongs to material, so splitting or restoring a facet does not change its identity. */
-export function visibleMaterialMarks(state: PaperState & {readonly marks?: readonly MaterialMark[]}) {
+export function visibleMaterialMarks(paper: LabPaperState) {
+  const state = paperInView(paper);
   if (!state.marks?.length) return [];
   const faces = [...state.facets].sort((a, b) => b.z - a.z).map(facet => ({facet, world: currentPolygon(facet)}));
   return state.marks.flatMap(mark => {

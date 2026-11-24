@@ -73,9 +73,14 @@ pin at right angles to the line (O4). For example, hold the top midpoint of
 a square, then slide the bottom edge from left to right to fold at the center.
 Grabbing a corner or marked dot still starts a point drag.
 
+Use **Flip over** to turn the entire folded sheet around its vertical center.
+The opposite faces and layers become accessible for folding. The turn is
+recorded in the history and can be undone. Turning twice about the same
+center restores the previous view.
+
 Select **Unfold** to reverse the most recent active fold while keeping all
 creases on the paper. After several folds, select it repeatedly to open them
-in reverse order. For example, fold the square vertically in half and select
+in reverse order, even after a turnover. For example, fold the square vertically in half and select
 **Unfold** to return to a flat square with a center crease.
 
 Tap near a crossing between creases or where a crease meets a paper edge, then
@@ -200,6 +205,16 @@ latest active fold to be reversed when the current geometry matches its
 certified endpoint. Each Unfold record names that attempt and retains all
 material creases. Arbitrary opening of locked or interacting flaps is outside
 the model.
+
+`recordFlip(experiment)` records a turnover about the current displayed
+vertical center. The optional paper pose records orientation and position
+separately from the intrinsic facet mesh and material creases.
+`paperInView(state)` gives the exposed side's positions and layer order.
+Submit folds in those displayed coordinates. The validator maps the axis,
+moving side, and layer placement into the intrinsic sheet frame. Unfold
+keeps the current pose. JSON replay restores the pose at each step, and
+FOLD export applies it to the folded form while keeping the crease pattern in
+material coordinates.
 
 `materialIntersections(state, near, radius)` returns exact finite intersections
 in original sheet coordinates. Use `recordMark(experiment, point)` to mark one
