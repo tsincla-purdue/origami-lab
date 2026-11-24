@@ -3,13 +3,13 @@ import type { Vec } from '../vendor/origamio/src/geometry';
 import { foldedPoints } from '../vendor/origamio/src/paper';
 import { cameraViewBox, fitCamera, viewBox } from '../vendor/origamio/src/render';
 import {
-  DEFAULT_PAPER_STYLE, PAPER_STYLES, PRESETS, apply, createExperiment, exportFold, importExperiment,
-  isPaperStyle, propose, recordMove, serializeExperiment, setPaperStyle, stateAt, undoMove, validate,
+  DEFAULT_PAPER_STYLE, PAPER_STYLES, PRESETS, apply, canUnfold, createExperiment, exportFold, importExperiment,
+  isPaperStyle, propose, recordMove, recordUnfold, serializeExperiment, setPaperStyle, stateAt, undoMove, validate,
 } from './lab';
 import type { Experiment, Move, PaperStyle, Validation } from './lab';
 import { MAX_EXPERIMENT_LENGTH } from './lab/experiment';
-import { connectGestures, draftMove, type CornerSelection, type Draft, type Tool } from './playground/gestures';
-import { cornerHandles, faceColor, packetMarkup, paperMarkup, previewMarkup, styleSwatch } from './playground/paper-view';
+import { connectGestures, draftMove, type ConstraintIssue, type CornerSelection, type Draft, type Tool } from './playground/gestures';
+import { constraintMarkup, cornerHandles, faceColor, packetMarkup, paperMarkup, previewMarkup, styleSwatch } from './playground/paper-view';
 
 const get = <T extends HTMLElement | SVGElement = HTMLElement>(id: string) => document.getElementById(id) as unknown as T;
 const candidate = get<HTMLSelectElement>('candidate');
@@ -19,6 +19,7 @@ const paper = get<SVGSVGElement>('paper');
 const perform = get<HTMLButtonElement>('perform');
 const history = get<HTMLOListElement>('history');
 const undo = get<HTMLButtonElement>('undo');
+const unfold = get<HTMLButtonElement>('unfold');
 const replay = get<HTMLButtonElement>('replay');
 const reset = get<HTMLButtonElement>('reset');
 const fileInput = get<HTMLInputElement>('import-file');
@@ -28,6 +29,8 @@ const confirmFold = get<HTMLButtonElement>('confirm-fold');
 const cancelFold = get<HTMLButtonElement>('cancel-fold');
 const cornerControl = get<HTMLSelectElement>('packet-corner');
 const countControl = get<HTMLSelectElement>('packet-count');
+const pinButton = get<HTMLButtonElement>('pin-point');
+const solutionChoice = get<HTMLSelectElement>('solution-choice');
 
 const styleKey = 'origami-lab.paper-style';
 function savedStyle(): PaperStyle {
@@ -52,6 +55,8 @@ let tool: Tool = 'corner';
 let pending: Draft | undefined;
 let hoverCorner: Vec | undefined;
 let preview: ReturnType<typeof apply> | undefined;
+let alternatives: ReturnType<typeof apply>[] = [];
+let constraintIssue: ConstraintIssue | undefined;
 let gestureFeedback: Validation | undefined;
 let shownCorners: readonly Vec[] | undefined;
 let shownSelection: CornerSelection | undefined;
@@ -93,7 +98,8 @@ function drawOverlay() {
     layer.innerHTML = '';
     return;
   }
-  const move = atTip() && advanced.open && !pending && !hoverCorner && !gestureFeedback ? moves[candidate.selectedIndex] : undefined;
+  const move = atTip() && advanced.open && !pending && !hoverCorner && !gestureFeedback && !gestures.pinned()
+    ? moves[candidate.selectedIndex] : undefined;
   const guide = pending ?? (move && {
     line: { a: { x: move.line[0][0], y: move.line[0][1] }, b: { x: move.line[1][0], y: move.line[1][1] } },
     side: move.side,
@@ -103,30 +109,35 @@ function drawOverlay() {
   const selection = gestures.selection();
   const unit = pixelUnit();
   layer.innerHTML = (selection ? packetMarkup(state, selection, guide, unit) : '') +
-    previewMarkup(state, guide, endpoint, hoverCorner, unit, !selection);
+    previewMarkup(state, guide, endpoint, hoverCorner, unit, !selection) +
+    constraintMarkup(gestures.pinned(), pending, constraintIssue?.target, unit);
 }
 
 function displayPacketControls() {
   const corners = gestures.availableCorners();
   const selection = gestures.selection();
-  if (corners !== shownCorners) {
+  const current = selection ? corners.indexOf(selection.corner) : -1;
+  const selectedPoint = selection && current < 0 ? selection.corner : undefined;
+  if (corners !== shownCorners || selection !== shownSelection) {
     cornerControl.replaceChildren(new Option('Choose a corner', ''), ...corners.map(({x, y}, index) =>
       new Option(`Corner ${index + 1} · (${x.toFixed(2)}, ${y.toFixed(2)})`, String(index))));
+    if (selectedPoint) cornerControl.add(new Option(
+      `Selected point · (${selectedPoint.x.toFixed(2)}, ${selectedPoint.y.toFixed(2)})`, 'point',
+    ));
     shownCorners = corners;
   }
-  const current = selection ? corners.indexOf(selection.corner) : -1;
-  cornerControl.value = current < 0 ? '' : String(current);
+  cornerControl.value = selectedPoint ? 'point' : current < 0 ? '' : String(current);
   cornerControl.disabled = !corners.length;
-  countControl.disabled = !selection;
+  countControl.disabled = !editable();
   if (selection !== shownSelection || !countControl.options.length) {
     countControl.replaceChildren(...(selection ? [
       ...selection.packets.map(({facetIds}) => new Option(String(facetIds.length))),
       new Option('Whole stack', 'all'),
-    ] : [new Option('Choose a corner', '')]));
+    ] : [new Option('Top at selected point', ''), new Option('Whole stack', 'all')]));
   }
-  if (selection) countControl.value = String(selection.count);
+  countControl.value = gestures.wholeStack() ? 'all' : selection ? String(selection.count) : '';
   const max = selection?.packets.at(-1)?.facetIds.length;
-  const text = selection?.count === 'all' ? 'Whole stack' : selection ? `${selection.count}/${max} layers` : '';
+  const text = gestures.wholeStack() ? 'Whole stack' : selection ? `${selection.count}/${max} layers` : '';
   const status = get('packet-status');
   if (status.textContent !== text) status.textContent = text;
 }
@@ -134,29 +145,48 @@ function displayPacketControls() {
 function gestureStatus() {
   const verdict = preview?.validation ?? gestureFeedback;
   const status = get('gesture-status');
-  status.hidden = !verdict;
-  status.className = `status-pill ${verdict?.status ?? ''}`;
-  const text = verdict?.status ?? '';
+  const text = verdict?.status ?? constraintIssue?.status ?? '';
+  status.hidden = !text;
+  status.className = `status-pill ${text}`;
   if (status.textContent !== text) status.textContent = text;
-  const message = verdict?.reason ?? (creaseView ? 'Switch to Folded to use the fold tools.' :
+  const pin = gestures.pinned();
+  const message = verdict?.reason ?? constraintIssue?.reason ?? (creaseView ? 'Switch to Folded to use the fold tools.' :
     !atTip() ? 'Return to the last history step to continue folding.' :
-    pending ? 'Tap the side of the line you want to move.' :
-    tool === 'corner' ? 'Tap a corner to select layers, then drag it onto a new point.' : 'Draw a crease, then tap the side to move.');
+    pending?.tool === 'crease' ? 'Tap the side of the line you want to move.' :
+    pin ? 'Drag a point toward a visible crease or edge.' :
+    tool === 'corner' ? 'Drag a corner, or tap a point to select it.' : 'Draw a crease, then tap the side to move.');
   const reason = get('gesture-reason');
   if (reason.textContent !== message) reason.textContent = message;
-  confirmFold.hidden = pending?.tool !== 'crease' || pending.side === undefined;
+  const confirmation = pending && pending.side !== undefined && gestures.canConfirm(pending);
+  confirmFold.hidden = !confirmation;
   confirmFold.disabled = preview?.validation.status !== 'accepted';
-  cancelFold.hidden = !pending;
+  cancelFold.hidden = !pending && !pin;
+  pinButton.disabled = !editable() || tool !== 'corner' || (!pin && !gestures.selection());
+  pinButton.setAttribute('aria-pressed', String(Boolean(pin)));
+  pinButton.textContent = pin ? 'Unpin point' : 'Pin point';
+  get('solution-control').hidden = !confirmation || alternatives.length < 2;
+  if (confirmation && alternatives.length > 1) {
+    const labels = pending?.constraint?.solutions.map(({destination}, index) =>
+      `(${destination.x.toFixed(3)}, ${destination.y.toFixed(3)}) · ${alternatives[index].validation.status}`) ?? [];
+    if (labels.join() !== [...solutionChoice.options].map(option => option.text).join()) {
+      solutionChoice.replaceChildren(...labels.map((label, index) => new Option(label, String(index))));
+    }
+    solutionChoice.value = String(pending?.constraint?.index ?? 0);
+  }
 }
 
-function showDraft(draft?: Draft, hover?: Vec) {
+function showDraft(draft?: Draft, hover?: Vec, issue?: ConstraintIssue) {
   pending = draft;
   hoverCorner = hover;
+  constraintIssue = issue;
   const selection = gestures.selection();
   const selectionChanged = selection !== shownSelection;
-  if (draft || selectionChanged) gestureFeedback = undefined;
+  if (draft || issue || selectionChanged) gestureFeedback = undefined;
   const move = draft && draftMove(draft);
-  preview = move && editable() ? apply(experiment.final, move) : undefined;
+  alternatives = draft?.constraint && editable() ? draft.constraint.solutions.map(solution =>
+    apply(experiment.final, draftMove({...draft, ...solution}))) : [];
+  preview = draft?.constraint ? alternatives[draft.constraint.index] :
+    move && editable() ? apply(experiment.final, move) : undefined;
   drawOverlay();
   gestureStatus();
   displayPacketControls();
@@ -294,6 +324,7 @@ function render() {
   renderCandidate();
 
   undo.disabled = !atTip() || !experiment.attempts.length;
+  unfold.disabled = !atTip() || !canUnfold(experiment);
   replay.disabled = experiment.attempts.length === 0;
   get('replay-label').textContent = playback === undefined ? 'Replay' : 'Pause';
 }
@@ -357,18 +388,29 @@ new ResizeObserver(() => {
   drawOverlay();
 }).observe(paper);
 candidate.addEventListener('change', renderCandidate);
-advanced.addEventListener('toggle', renderCandidate);
+advanced.addEventListener('toggle', () => {
+  if (!advanced.open && tool === 'crease') {
+    tool = 'corner';
+    clearGesture();
+    displayDrawing();
+  }
+  renderCandidate();
+});
 perform.addEventListener('click', () => {
   const move = candidateMove();
   if (move) commitMove(move);
 });
 cornerControl.addEventListener('change', () => {
+  if (cornerControl.value === 'point') return;
   const corner = cornerControl.value === '' ? undefined : gestures.availableCorners()[Number(cornerControl.value)];
   gestures.selectCorner(corner);
 });
 countControl.addEventListener('change', () => {
-  gestures.selectCount(countControl.value === 'all' ? 'all' : Number(countControl.value));
+  const value = countControl.value;
+  gestures.selectCount(value === 'all' ? 'all' : value ? Number(value) : undefined);
 });
+pinButton.addEventListener('click', () => gestures.togglePin());
+solutionChoice.addEventListener('change', () => gestures.selectSolution(Number(solutionChoice.value)));
 for (const mode of ['corner', 'crease'] as const) {
   get(`${mode}-tool`).addEventListener('click', () => {
     tool = mode;
@@ -385,6 +427,17 @@ undo.addEventListener('click', () => {
   if (!atTip() || !experiment.attempts.length) return;
   const retained = undoMove(experiment);
   replaceExperiment(retained, retained.attempts.length);
+});
+unfold.addEventListener('click', () => {
+  if (!atTip() || !canUnfold(experiment)) return;
+  try {
+    const next = recordUnfold(experiment);
+    creaseView = false;
+    tool = 'corner';
+    replaceExperiment(next, next.attempts.length);
+  } catch (error) {
+    notify((error as Error).message, true);
+  }
 });
 reset.addEventListener('click', () => {
   creaseView = false;

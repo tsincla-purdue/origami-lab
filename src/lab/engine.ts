@@ -34,6 +34,7 @@ export const NUMERICS = Object.freeze({
 
 const { auditDistance, auditArea, maxFacets } = NUMERICS;
 const verifiedStates = new WeakSet<PaperState>();
+const foldSources = new WeakMap<PaperState, PaperState>();
 
 export function deepFreeze<T>(value: T): T {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -333,7 +334,16 @@ export function validate(state: PaperState, move: unknown): Validation {
 
 export function apply(state: PaperState, move: unknown, validatorVersion: 1 | 2 = NUMERICS.validatorVersion): {state: PaperState; validation: Validation} {
   const { validation, trial } = evaluate(state, move, validatorVersion === 1);
-  return { state: trial ? verified(trial.state) : state, validation };
+  if (!trial) return { state, validation };
+  const folded = verified(trial.state);
+  foldSources.set(folded, state);
+  return { state: folded, validation };
+}
+
+/** Reverse the certified path of one fold, restoring its input mesh and retaining the material creases. */
+export function reverseFold(state: PaperState): PaperState | undefined {
+  const source = foldSources.get(state);
+  if (source) return verified({ ...source, creases: state.creases, nextId: state.nextId });
 }
 
 /** Finite candidate set in the current folded bounds, in stable order. */

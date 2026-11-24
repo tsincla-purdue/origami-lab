@@ -59,10 +59,7 @@
             </div>
           </div>
           <div class="paper-toolbar">
-            <div class="view-switch" role="group" aria-label="Fold tool">
-              <button type="button" id="corner-tool" aria-pressed="true">Drag corner</button>
-              <button type="button" id="crease-tool" aria-pressed="false">Draw crease</button>
-            </div>
+            <button type="button" id="pin-point" class="button outlined" aria-pressed="false">Pin point</button>
             <label class="snap-toggle"><input id="snap-toggle" type="checkbox" checked /> Snap to points</label>
           </div>
           <div class="drawing">
@@ -79,6 +76,7 @@
               <span id="gesture-status" class="status-pill" hidden></span>
               <p id="gesture-reason"></p>
             </div>
+            <label id="solution-control" hidden>Landing point<select id="solution-choice"></select></label>
             <button type="button" id="cancel-fold" class="button quiet" hidden>Cancel</button>
             <button type="button" id="confirm-fold" class="button primary" hidden>Confirm fold</button>
           </div>
@@ -104,6 +102,10 @@
           <details class="card operations" id="advanced">
             <summary>Advanced Controls</summary>
             <div class="advanced-fields">
+              <div class="view-switch advanced-tools" role="group" aria-label="Exact fold tools">
+                <button type="button" id="corner-tool" aria-pressed="true">Drag paper</button>
+                <button type="button" id="crease-tool" aria-pressed="false">Draw crease</button>
+              </div>
               <label for="candidate">Operation</label>
               <select id="candidate"></select>
               <div class="validation" id="validation" aria-live="polite">
@@ -124,6 +126,7 @@
               <button type="button" id="undo" class="button outlined" title="Remove the last attempt">
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5 4 10l5 5m-5-5h10a5 5 0 0 1 0 10"/></svg>Undo
               </button>
+              <button type="button" id="unfold" class="button outlined" title="Reverse the last fold and keep its crease">Unfold</button>
               <button type="button" id="replay" class="button outlined">
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 11 7-11 7Z"/></svg><span id="replay-label">Replay</span>
               </button>

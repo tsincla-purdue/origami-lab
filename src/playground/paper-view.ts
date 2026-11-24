@@ -1,6 +1,7 @@
-import { add, clipPolygon, lineDirection, scale, type Polygon, type Vec } from '../../vendor/origamio/src/geometry';
+import { add, clipPolygon, lineDirection, scale, type Line, type Polygon, type Vec } from '../../vendor/origamio/src/geometry';
 import { currentPolygon, isFlipped, type PaperState } from '../../vendor/origamio/src/paper';
 import type { PaperStyle } from '../lab';
+import { facetCreases } from '../lab/crease-references';
 import { CORNER_HIT_RADIUS } from './geometry';
 import type { CornerSelection, Draft } from './gestures';
 
@@ -62,18 +63,19 @@ export const faceColor = (style: PaperStyle, face: Face) => palette[style][face]
 const points = (poly: Polygon) => poly.map(({x, y}) => `${x},${y}`).join(' ');
 
 /** Both the polygon and its fill are authored in the same original sheet coordinates. */
-export function foldedFacets(state: PaperState): string {
+export function foldedFacets(state: PaperState, showCreases = false): string {
   return [...state.facets].sort((a, b) => a.z - b.z).map(facet => {
     const {a, b, c, d, e, f} = facet.transform;
     const face = isFlipped(facet) ? 'back' : 'front';
-    return `<polygon class="paper-facet" data-id="${facet.id}" data-face="${face}" points="${points(facet.poly)}" transform="matrix(${a} ${b} ${c} ${d} ${e} ${f})" fill="url(#paper-${face})"/>`;
+    return `<polygon class="paper-facet" data-id="${facet.id}" data-face="${face}" points="${points(facet.poly)}" transform="matrix(${a} ${b} ${c} ${d} ${e} ${f})" fill="url(#paper-${face})"/>` +
+      (showCreases ? facetCreases(state, facet).map(({a, b}) => segment(a, b, 'paper-reference')).join('') : '');
   }).join('');
 }
 
 export function paperMarkup(state: PaperState, style: PaperStyle, unfolded: boolean): string {
   const defs = `<defs>${pattern(style, 'front', state.width, state.height, 'paper')}${pattern(style, 'back', state.width, state.height, 'paper')}` +
     `<clipPath id="paper-silhouette">${state.facets.map(facet => `<polygon points="${points(currentPolygon(facet))}"/>`).join('')}</clipPath></defs>`;
-  if (!unfolded) return defs + foldedFacets(state);
+  if (!unfolded) return defs + foldedFacets(state, true);
   const surface = `<rect class="paper-facet" data-face="front" width="${state.width}" height="${state.height}" fill="url(#paper-front)"/>`;
   return defs + surface + state.creases.map(({a, b}) => segment(a, b, 'crease')).join('');
 }
@@ -82,6 +84,16 @@ const segment = (a: Vec, b: Vec, cls: string) =>
   `<line class="${cls}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"/>`;
 const circle = (p: Vec, radius: number, cls: string) =>
   `<circle class="${cls}" cx="${p.x}" cy="${p.y}" r="${radius}"/>`;
+
+export function constraintMarkup(pin: Vec | undefined, draft: Draft | undefined, target: Line | undefined, unit: number) {
+  if (!pin) return '';
+  const constraint = draft?.constraint;
+  const line = constraint?.target ?? target;
+  const alternatives = constraint?.solutions.flatMap(({destination}, i) => i === constraint.index ? [] :
+    [circle(destination, 6 * unit, 'alternative-landing')]).join('') ?? '';
+  return (line ? segment(line.a, line.b, 'constraint-target') : '') +
+    alternatives + circle(pin, 6 * unit, 'pin-anchor');
+}
 
 export function cornerHandles(corners: readonly Vec[], unit: number): string {
   return corners.map(point =>
