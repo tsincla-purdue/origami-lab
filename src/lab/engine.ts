@@ -1,6 +1,6 @@
 import {
-  AREA_EPS, EPS, ON_LINE_EPS, apply as mapPoint, area, bounds, chord, clipPolygon,
-  distance, dot, intersectConvex, lineDirection, perpendicularBisector, reflection, signedDistance,
+  AREA_EPS, EPS, ON_LINE_EPS, apply as mapPoint, area, bounds, chord, clipPolygon, containsPoint,
+  distance, dot, intersectConvex, lineDirection, perpendicularBisector, reflection, signedDistance, sub,
   type Line, type Polygon, type Vec,
 } from '../../vendor/origamio/src/geometry';
 import {
@@ -10,8 +10,10 @@ import { hinges, tears } from '../../vendor/origamio/src/rigid';
 import { parseStep, type FoldStep, type StepJson } from '../../vendor/origamio/src/sequence';
 import { connected, foldPacket, type MaterialPacket } from './packets';
 import type { MaterialMark } from './material-points';
+import { facetCreases } from './crease-references';
+import { resolveLineFold, type LineFoldIntent, type LineReference } from './line-constraints';
 
-export type Move = StepJson & { readonly packet?: MaterialPacket };
+export type Move = StepJson & { readonly packet?: MaterialPacket; readonly intent?: LineFoldIntent };
 export type PaperState = OrigamioState & { readonly marks?: readonly MaterialMark[] };
 export type Validation = {
   readonly status: 'accepted' | 'rejected' | 'unverified';
@@ -73,12 +75,20 @@ function parseMove(value: unknown): FoldStep & { readonly packet?: MaterialPacke
       }
     }
   }
-  check(value, ['also', 'label', 'packet']);
+  check(value, ['also', 'label', 'packet', 'intent']);
   const move = value as Move;
   if (Array.isArray(move.also)) {
     for (const part of move.also) check(part, []);
   }
   const step = parseStep(move);
+  if (move.intent !== undefined) {
+    const intent = move.intent;
+    if (!intent || (intent.kind !== 'align-lines' && intent.kind !== 'perpendicular') ||
+        !resolveLineFold(intent).solutions.some(solution => solution.side === step.side &&
+          distance(solution.line.a, step.line.a) === 0 && distance(solution.line.b, step.line.b) === 0)) {
+      throw new Error('The crease must match the recorded line constraint.');
+    }
+  }
   const packet = move.packet;
   if (packet === undefined) return step;
   if (!packet || typeof packet !== 'object' || Object.keys(packet).some(key => key !== 'facetIds') ||
@@ -89,6 +99,17 @@ function parseMove(value: unknown): FoldStep & { readonly packet?: MaterialPacke
   }
   if (move.layers !== undefined || move.attached) throw new Error('Use material facet IDs or layer and attachment selectors.');
   return { ...step, packet };
+}
+
+function hasLineReference(state: PaperState, {facetId, line}: LineReference): boolean {
+  const facet = state.facets.find(({id}) => id === facetId);
+  if (!facet) return false;
+  const poly = currentPolygon(facet);
+  const edges = poly.map((a, i) => ({a, b: poly[(i + 1) % poly.length]}));
+  return [line.a, line.b].every(point => containsPoint(poly, point)) &&
+    [...facetCreases(state, facet), ...edges].some(segment =>
+      [line.a, line.b].every(point => Math.abs(signedDistance(segment, point)) <= EPS &&
+        dot(sub(point, segment.a), sub(point, segment.b)) <= EPS));
 }
 
 const interval = (poly: Polygon, axis: Line) => {
@@ -264,6 +285,12 @@ function evaluate(state: PaperState, move: unknown, legacyClearance = false): { 
   }
   if (!verifiedStates.has(state)) {
     return { validation: outcome('unverified', 'unknown-state', 'Reconstruct the state by replaying a lab experiment first.') };
+  }
+  const intent = (move as Move).intent;
+  if (intent && (!hasLineReference(state, intent.source) ||
+      (intent.kind === 'align-lines' && !hasLineReference(state, intent.target)) ||
+      (step.packet && !step.packet.facetIds.includes(intent.source.facetId)))) {
+    return {validation: outcome('rejected', 'line-material', 'The selected line and moving packet must refer to the current material.')};
   }
   const opts = step.options;
   if (step.also?.length || opts.angle !== undefined || opts.region || opts.window) {

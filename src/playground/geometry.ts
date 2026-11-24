@@ -4,12 +4,13 @@ import {
 } from '../../vendor/origamio/src/geometry';
 import { currentPolygon } from '../../vendor/origamio/src/paper';
 import { snapTargets } from '../../vendor/origamio/src/snap';
-import type { Move, PaperState } from '../lab';
-import { facetCreases } from '../lab/crease-references';
+import type { LineReference, Move, PaperState } from '../lab';
+import { clipCrease, facetCreases } from '../lab/crease-references';
 import { materialIntersections, segmentIntersection, visibleMaterialMarks } from '../lab/material-points';
 
 export const CORNER_HIT_RADIUS = 22;
 export const MARK_HIT_RADIUS = 15;
+export const LINE_GRAB_RADIUS = 8;
 
 /** Include the paper's y-up to SVG y-down conversion in the screen transform. */
 export function paperToScreen(svgToScreen: Mat, size: number): Mat {
@@ -28,6 +29,37 @@ export function nearestPoint(points: readonly Vec[], screen: Vec, transform: Mat
     }
   }
   return best;
+}
+
+export function nearestLine<T extends {readonly line: Line}>(
+  lines: readonly T[], screen: Vec, transform: Mat, radius: number, visible?: (reference: T, point: Vec) => boolean,
+) {
+  let closest: {reference: T; point: Vec} | undefined;
+  let best = radius;
+  for (const reference of lines) {
+    const {a, b} = reference.line;
+    const start = apply(transform, a);
+    const delta = sub(apply(transform, b), start);
+    const squared = dot(delta, delta);
+    if (squared <= EPS) continue;
+    const t = Math.min(1, Math.max(0, dot(sub(screen, start), delta) / squared));
+    const gap = distance(screen, add(start, scale(delta, t)));
+    if (gap > best || (closest && gap === best)) continue;
+    const point = lerp(a, b, t);
+    if (visible && !visible(reference, point)) continue;
+    best = gap;
+    closest = {reference, point};
+  }
+  return closest;
+}
+
+function subtractCover(line: Line, poly: Polygon): Line[] {
+  const covered = clipCrease(line, poly);
+  if (!covered) return [line];
+  const remaining: Line[] = [];
+  if (distance(line.a, covered.a) > EPS) remaining.push({a: line.a, b: covered.a});
+  if (distance(covered.b, line.b) > EPS) remaining.push({a: covered.b, b: line.b});
+  return remaining;
 }
 
 export function foldMove(line: Line, side: Side, label: string): Move {
@@ -88,6 +120,7 @@ export function paperGeometry(state: PaperState) {
   // Keep the original per-layer search order so equal-distance O5 targets stay stable.
   const lines = [...creaseLines, ...edges].sort((a, b) => a.layer - b.layer);
   let references: Vec[] | undefined;
+  let exposed: LineReference[] | undefined;
   return {
     corners,
     marked,
@@ -140,23 +173,18 @@ export function paperGeometry(state: PaperState) {
       references = points;
       return references;
     },
+    grabLines(): readonly LineReference[] {
+      return exposed ??= lines.flatMap(({line, layer}) => {
+        let segments = distance(line.a, line.b) > EPS ? [line] : [];
+        for (let upper = 0; upper < layer && segments.length; upper++) {
+          segments = segments.flatMap(segment => subtractCover(segment, faces[upper].poly));
+        }
+        return segments.map(line => ({line, facetId: faces[layer].facet.id}));
+      });
+    },
     snapLine(screen: Vec, transform: Mat, radius: number) {
-      let closest: {line: Line; point: Vec} | undefined;
-      let best = radius;
-      for (const {line, layer} of lines) {
-        const a = apply(transform, line.a);
-        const delta = sub(apply(transform, line.b), a);
-        const squared = dot(delta, delta);
-        if (squared <= EPS) continue;
-        const t = Math.min(1, Math.max(0, dot(sub(screen, a), delta) / squared));
-        const gap = distance(screen, add(a, scale(delta, t)));
-        if (gap > best || (closest && gap === best)) continue;
-        const point = add(line.a, scale(sub(line.b, line.a), t));
-        if (!visibleAt(point, layer)) continue;
-        closest = {line, point};
-        best = gap;
-      }
-      return closest;
+      const hit = nearestLine(lines, screen, transform, radius, ({layer}, point) => visibleAt(point, layer));
+      if (hit) return {line: hit.reference.line, point: hit.point};
     },
   };
 }

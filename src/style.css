@@ -206,6 +206,8 @@ select:disabled { opacity: .65; cursor: default; }
 #paper-preview, .corner-dot { pointer-events: none; }
 .corner-touch, .mark-touch { fill: transparent; touch-action: none; cursor: grab; }
 .corner-touch:active, .mark-touch:active { cursor: grabbing; }
+.line-touch { stroke: transparent; touch-action: none; pointer-events: stroke; cursor: grab; }
+.line-touch:active { cursor: grabbing; }
 .material-mark, .intersection-selection { vector-effect: non-scaling-stroke; pointer-events: none; }
 .material-mark { fill: #3d2e78; stroke: #fff; stroke-width: 1; }
 .intersection-selection { fill: none; stroke: #3d2e78; stroke-width: 1.5; }
@@ -235,9 +237,10 @@ select:disabled { opacity: .65; cursor: default; }
 }
 .packet-moving { fill-opacity: .28; }
 .packet-anchor { fill: white; stroke: #137458; stroke-width: 1.8; vector-effect: non-scaling-stroke; }
-.paper-reference, .constraint-target, .pin-anchor, .alternative-landing { vector-effect: non-scaling-stroke; }
+.paper-reference, .constraint-source, .constraint-target, .pin-anchor, .alternative-landing { vector-effect: non-scaling-stroke; }
 .paper-reference { stroke: #473254; stroke-opacity: .65; stroke-width: 1; stroke-dasharray: 3 4; pointer-events: none; }
 .constraint-target { stroke: #137458; stroke-width: 2.4; }
+.constraint-source { stroke: #874519; stroke-width: 2.4; stroke-dasharray: 5 4; }
 .pin-anchor { fill: #f5c450; stroke: #714b0f; stroke-width: 1.6; }
 .alternative-landing { fill: #fff; stroke: #137458; stroke-width: 1.4; stroke-dasharray: 2 2; }
 .preview-line {

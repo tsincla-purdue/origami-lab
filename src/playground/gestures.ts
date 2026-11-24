@@ -1,10 +1,16 @@
 import {
-  EPS, add, apply, distance, invert, signedDistance, sub, type Line, type Side, type Vec,
+  EPS, add, apply, distance, dot, invert, signedDistance, sub, type Line, type Side, type Vec,
 } from '../../vendor/origamio/src/geometry';
-import { cornerPackets, solvePointOntoLine, type ConstraintSolution, type MaterialPacket, type PaperState } from '../lab';
+import {
+  cornerPackets, resolveLineFold, solvePointOntoLine,
+  type ConstraintSolution, type LineFoldIntent, type LineReference, type MaterialPacket, type PaperState,
+} from '../lab';
 import { packetHingeLanding } from '../lab/packets';
 import { snapCrease } from './crease-snap';
-import { CORNER_HIT_RADIUS, MARK_HIT_RADIUS, cornerFold, foldMove, nearestPoint, paperGeometry, paperToScreen, type MarkOption } from './geometry';
+import {
+  CORNER_HIT_RADIUS, LINE_GRAB_RADIUS, MARK_HIT_RADIUS, cornerFold, foldMove, nearestLine,
+  nearestPoint, paperGeometry, paperToScreen, type MarkOption,
+} from './geometry';
 
 export type Tool = 'corner' | 'crease';
 export interface Draft {
@@ -18,20 +24,24 @@ export interface Draft {
   readonly packet?: MaterialPacket;
   readonly inferFrom?: readonly MaterialPacket[];
   readonly constraint?: { readonly target: Line; readonly solutions: readonly ConstraintSolution[]; readonly index: number };
+  readonly lineIntent?: LineFoldIntent;
 }
 
 export interface ConstraintIssue {
   readonly reason: string;
   readonly target?: Line;
+  readonly source?: Line;
   readonly status?: 'unverified' | 'rejected';
 }
 
 export function draftMove(draft: Draft) {
   if (draft.side === undefined) return;
-  const label = draft.constraint ? 'Point onto line' : draft.creaseSnapped ? 'Crease through two points'
+  const label = draft.lineIntent?.kind === 'align-lines' ? 'Align lines'
+    : draft.lineIntent?.kind === 'perpendicular' ? 'Perpendicular through point'
+    : draft.constraint ? 'Point onto line' : draft.creaseSnapped ? 'Crease through two points'
     : draft.tool === 'corner' ? 'Point drag' : 'Drawn crease';
   const move = foldMove(draft.line, draft.side, label);
-  return draft.packet ? { ...move, packet: draft.packet } : move;
+  return {...move, ...(draft.packet && {packet: draft.packet}), ...(draft.lineIntent && {intent: draft.lineIntent})};
 }
 
 export interface CornerSelection {
@@ -47,12 +57,14 @@ interface Drag {
   id: number;
   start: Vec;
   anchor: Vec;
+  tapAnchor: Vec;
   anchorSnapped: boolean;
   grabOffset: Vec;
   minimum: number;
   moved: boolean;
   tapOnly: boolean;
   hingeLandings: readonly Vec[];
+  source?: LineReference;
   creaseSnap?: Line;
   holdTimer?: number;
   longPress?: boolean;
@@ -153,8 +165,36 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
     const target = add(client(event), drag.grabOffset);
     const {anchor} = drag;
     issue = undefined;
+    const radius = event.pointerType === 'touch' ? 24 : 17;
+    const source = drag.source;
+    const sameLine = source && nearestLine([source], target, map, radius);
+    if (source && geometry && (!pin || sameLine)) {
+      const hit = pin ? sameLine : nearestLine(geometry.grabLines(), target, map, radius);
+      if (!hit) {
+        issue = {source: source.line, reason: 'Drag toward a visible edge or crease to align the lines.'};
+        return;
+      }
+      const lineIntent: LineFoldIntent = pin
+        ? {kind: 'perpendicular', source, moving: anchor, pin}
+        : {kind: 'align-lines', source, moving: anchor, target: hit.reference};
+      const result = resolveLineFold(lineIntent);
+      if (result.status !== 'solved') {
+        issue = {source: source.line, target: hit.reference.line, reason: result.reason,
+          status: result.status === 'unverified' ? 'unverified' : 'rejected'};
+        return;
+      }
+      const candidates = result.solutions.map(solution => solution.destination);
+      const landing = nearestPoint(candidates, target, map, Infinity)!;
+      if (pin && dot(sub(target, apply(map, anchor)), sub(apply(map, landing), apply(map, anchor))) <= 0) {
+        issue = {source: source.line, reason: 'Drag along the line toward the other side of the pin.'};
+        return;
+      }
+      const index = candidates.indexOf(landing);
+      return {...result.solutions[index], tool, anchor, snapped: [landing], ...material(), lineIntent,
+        constraint: {target: hit.reference.line, solutions: result.solutions, index}};
+    }
     if (tool === 'corner' && pin && geometry) {
-      const nearby = geometry.snapLine(target, map, event.pointerType === 'touch' ? 24 : 17);
+      const nearby = geometry.snapLine(target, map, radius);
       if (!nearby) {
         issue = {reason: 'Drag toward a visible crease or edge while the pin stays fixed.'};
         return;
@@ -197,17 +237,19 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
     if (!map) return;
     const start = client(event);
     const touch = event.pointerType === 'touch';
-    const marked = nearestPoint(geometry.marked, start, map, MARK_HIT_RADIUS);
     const grab = nearestPoint([
-      ...(marked ? [marked] : []), ...geometry.corners, ...(selection ? [selection.corner] : []),
+      ...geometry.marked, ...geometry.corners, ...(selection ? [selection.corner] : []),
     ], start, map, CORNER_HIT_RADIUS);
     const anchor = tool === 'corner' ? grab : snap(start, map, event);
+    const lineGrab = tool === 'corner' && !anchor
+      ? nearestLine(geometry.grabLines(), start, map, LINE_GRAB_RADIUS) : undefined;
     const point = apply(invert(map), start);
     const edgePoint = callbacks.snapping() && !event.altKey ? geometry.snapLine(start, map, touch ? 18 : 13)?.point : undefined;
-    if (tool === 'corner' && !anchor && !edgePoint && !geometry.contains(point) &&
+    if (tool === 'corner' && !anchor && !lineGrab && !edgePoint && !geometry.contains(point) &&
         !geometry.markOptions(start, map, touch ? 18 : MARK_HIT_RADIUS).length) return;
-    const tapOnly = tool === 'corner' && !anchor;
-    const selectedPoint = anchor ?? (tool === 'corner' ? snap(start, map, event) ?? edgePoint : undefined) ?? point;
+    const tapOnly = tool === 'corner' && !anchor && !lineGrab;
+    const referencePoint = anchor ?? (tool === 'corner' ? snap(start, map, event) ?? edgePoint : undefined) ?? point;
+    const selectedPoint = lineGrab?.point ?? referencePoint;
     if (tool === 'corner' && !tapOnly) chooseCorner(selectedPoint);
     const {packet: selected, inferFrom} = material();
     const current = state;
@@ -218,13 +260,14 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
       })
       : [];
     drag = {
-      id: event.pointerId, start, anchor: selectedPoint,
+      id: event.pointerId, start, anchor: selectedPoint, tapAnchor: referencePoint,
       anchorSnapped: tool === 'crease' && anchor !== undefined,
-      grabOffset: tool === 'corner' && anchor ? sub(apply(map, anchor), start) : {x: 0, y: 0},
+      grabOffset: tool === 'corner' && (anchor || lineGrab) ? sub(apply(map, selectedPoint), start) : {x: 0, y: 0},
       minimum: touch ? 8 : 5,
       moved: false,
       tapOnly,
       hingeLandings,
+      source: lineGrab?.reference,
     };
     if (!tapOnly) {
       svg.setPointerCapture(event.pointerId);
@@ -238,16 +281,18 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
       press.holdTimer = window.setTimeout(() => {
         if (drag !== press || press.moved) return;
         press.longPress = true;
-        chooseCorner(press.anchor);
+        chooseCorner(referencePoint);
         const map = transform();
-        const same = pin && map && distance(apply(map, pin), apply(map, press.anchor)) <= CORNER_HIT_RADIUS;
-        pin = same ? undefined : press.anchor;
+        const same = pin && map && distance(apply(map, pin), apply(map, referencePoint)) <= CORNER_HIT_RADIUS;
+        pin = same ? undefined : referencePoint;
         confirmPin = false;
         lastTap = undefined;
         callbacks.show();
       }, PIN_HOLD);
     }
-    callbacks.show(held, tool === 'corner' ? anchor : undefined);
+    if (lineGrab) issue = {source: lineGrab.reference.line, reason: pin
+      ? 'Drag along this line to fold it back through the pin.' : 'Drag this line toward another visible edge or crease.'};
+    callbacks.show(held, tool === 'corner' ? anchor : undefined, issue);
   });
 
   svg.addEventListener('pointermove', event => {
@@ -277,7 +322,7 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
     }
     const wasTap = !drag.moved && distance(drag.start, client(event)) < drag.minimum;
     const draft = projection(event);
-    const anchor = drag.anchor;
+    const anchor = drag.tapAnchor;
     release();
     if (tool === 'corner') {
       if (draft) {
@@ -369,6 +414,7 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
     packet,
     availableCorners: () => geometry?.corners ?? [],
     markedPoints: () => tool === 'corner' ? geometry?.marked ?? [] : [],
+    grabLines: () => tool === 'corner' ? geometry?.grabLines() ?? [] : [],
     markOptions: () => offeredMarks,
     corners: () => tool === 'corner' ? geometry?.corners ?? [] : [],
     selectCorner(corner: Vec | undefined) {
