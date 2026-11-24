@@ -4,6 +4,7 @@ import {
 } from '../../vendor/origamio/src/geometry';
 import { currentPolygon, fold, type FoldOptions, type FoldResult, type PaperState } from '../../vendor/origamio/src/paper';
 import { hinges } from '../../vendor/origamio/src/rigid';
+import { paperInView } from './paper-pose';
 
 /** IDs in the material partition immediately before the operation. */
 export interface MaterialPacket {
@@ -29,7 +30,7 @@ export function connected(ids: ReadonlySet<number>, state: PaperState): boolean 
 
 /** Top prefixes that overlap in area near this point and are joined by material edges. */
 export function cornerPackets(state: PaperState, point: Vec): MaterialPacket[] {
-  const stack = [...state.facets].sort((a, b) => b.z - a.z || a.id - b.id)
+  const stack = [...paperInView(state).facets].sort((a, b) => b.z - a.z || a.id - b.id)
     .map(facet => ({id: facet.id, poly: currentPolygon(facet)}))
     .filter(({poly}) => containsPoint(poly, point));
   if (!stack.length) return [];
@@ -49,9 +50,10 @@ export function cornerPackets(state: PaperState, point: Vec): MaterialPacket[] {
 
 /** The exact opening destination of a corner when all packet attachments share an axis. */
 export function packetHingeLanding(state: PaperState, packet: MaterialPacket, corner: Vec): Vec | undefined {
+  const view = paperInView(state);
   const ids = new Set(packet.facetIds);
-  const facets = new Map(state.facets.map(facet => [facet.id, facet]));
-  const welds = hinges(state).filter(({p, q}) => ids.has(p) !== ids.has(q)).map(({p, a, b}) => {
+  const facets = new Map(view.facets.map(facet => [facet.id, facet]));
+  const welds = hinges(view).filter(({p, q}) => ids.has(p) !== ids.has(q)).map(({p, a, b}) => {
     const transform = facets.get(p)!.transform;
     return { a: apply(transform, a), b: apply(transform, b) };
   });

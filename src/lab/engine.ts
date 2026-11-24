@@ -1,10 +1,10 @@
 import {
-  AREA_EPS, EPS, ON_LINE_EPS, apply as mapPoint, area, bounds, chord, clipPolygon, containsPoint,
-  distance, dot, intersectConvex, lineDirection, perpendicularBisector, reflection, signedDistance, sub,
+  AREA_EPS, EPS, ON_LINE_EPS, apply as mapPoint, applyToLine, area, bounds, chord, clipPolygon, containsPoint,
+  distance, dot, intersectConvex, invert, lineDirection, perpendicularBisector, reflection, signedDistance, sub,
   type Line, type Polygon, type Vec,
 } from '../../vendor/origamio/src/geometry';
 import {
-  createPaper, currentPolygon, fold, type FoldResult, type PaperState as OrigamioState,
+  createPaper, currentPolygon, fold, type FoldResult,
 } from '../../vendor/origamio/src/paper';
 import { hinges, tears } from '../../vendor/origamio/src/rigid';
 import { parseStep, type FoldStep, type StepJson } from '../../vendor/origamio/src/sequence';
@@ -12,9 +12,10 @@ import { connected, foldPacket, type MaterialPacket } from './packets';
 import type { MaterialMark } from './material-points';
 import { facetCreases } from './crease-references';
 import { resolveLineFold, type LineFoldIntent, type LineReference } from './line-constraints';
+import { paperInView, paperTransform, type PaperPose, type PaperState } from './paper-pose';
 
 export type Move = StepJson & { readonly packet?: MaterialPacket; readonly intent?: LineFoldIntent };
-export type PaperState = OrigamioState & { readonly marks?: readonly MaterialMark[] };
+export type { PaperState };
 export type Validation = {
   readonly status: 'accepted' | 'rejected' | 'unverified';
   readonly code: string;
@@ -110,6 +111,23 @@ function hasLineReference(state: PaperState, {facetId, line}: LineReference): bo
     [...facetCreases(state, facet), ...edges].some(segment =>
       [line.a, line.b].every(point => Math.abs(signedDistance(segment, point)) <= EPS &&
         dot(sub(point, segment.a), sub(point, segment.b)) <= EPS));
+}
+
+/** An outward swing on the exposed reverse side is a bottom placement in material space. */
+function inPaperFrame(step: ReturnType<typeof parseMove>, pose: PaperPose | undefined): ReturnType<typeof parseMove> {
+  if (!pose) return step;
+  const line = applyToLine(invert(paperTransform(pose)), step.line);
+  if (!pose.reversed) return {...step, line};
+  const {layers, placement} = step.options;
+  return {
+    ...step, line, side: step.side === 1 ? -1 : 1,
+    options: {
+      ...step.options,
+      layers: !layers || layers.kind === 'all' ? layers
+        : {...layers, kind: layers.kind === 'top' ? 'bottom' : 'top'},
+      placement: placement === 'inside' ? placement : placement === 'bottom' ? 'top' : 'bottom',
+    },
+  };
 }
 
 const interval = (poly: Polygon, axis: Line) => {
@@ -279,7 +297,7 @@ function checkPartialMotion(
 function evaluate(state: PaperState, move: unknown, legacyClearance = false): { validation: Validation; trial?: FoldResult } {
   let step: ReturnType<typeof parseMove>;
   try {
-    step = parseMove(move);
+    step = inPaperFrame(parseMove(move), state.pose);
   } catch (error) {
     return { validation: outcome('rejected', 'invalid-move', (error as Error).message) };
   }
@@ -287,8 +305,8 @@ function evaluate(state: PaperState, move: unknown, legacyClearance = false): { 
     return { validation: outcome('unverified', 'unknown-state', 'Reconstruct the state by replaying a lab experiment first.') };
   }
   const intent = (move as Move).intent;
-  if (intent && (!hasLineReference(state, intent.source) ||
-      (intent.kind === 'align-lines' && !hasLineReference(state, intent.target)) ||
+  if (intent && (!hasLineReference(paperInView(state), intent.source) ||
+      (intent.kind === 'align-lines' && !hasLineReference(paperInView(state), intent.target)) ||
       (step.packet && !step.packet.facetIds.includes(intent.source.facetId)))) {
     return {validation: outcome('rejected', 'line-material', 'The selected line and moving packet must refer to the current material.')};
   }
@@ -363,7 +381,9 @@ export function validate(state: PaperState, move: unknown): Validation {
 export function apply(state: PaperState, move: unknown, validatorVersion: 1 | 2 = NUMERICS.validatorVersion): {state: PaperState; validation: Validation} {
   const { validation, trial } = evaluate(state, move, validatorVersion === 1);
   if (!trial) return { state, validation };
-  const folded = verified(state.marks ? {...trial.state, marks: state.marks} : trial.state);
+  const folded = verified({
+    ...trial.state, ...(state.marks && {marks: state.marks}), ...(state.pose && {pose: state.pose}),
+  });
   foldSources.set(folded, state);
   return { state: folded, validation };
 }
@@ -378,10 +398,30 @@ export function canReverseFold(state: PaperState, source: PaperState, folded: Pa
 /** Keep the material annotations and ID allocation from the current state. */
 export function reverseFold(state: PaperState, source: PaperState, folded: PaperState): PaperState | undefined {
   if (!canReverseFold(state, source, folded)) return;
-  const {marks: _marks, ...base} = source;
+  const {marks: _marks, pose: _pose, ...base} = source;
   return verified({
-    ...base, creases: state.creases, nextId: state.nextId, ...(state.marks && {marks: state.marks}),
+    ...base, creases: state.creases, nextId: state.nextId,
+    ...(state.marks && {marks: state.marks}), ...(state.pose && {pose: state.pose}),
   });
+}
+
+/** Turn the whole object around its displayed vertical center without replacing its mesh. */
+export function turnPaper(state: PaperState): {state: PaperState; axisX: number} {
+  if (!verifiedStates.has(state)) throw new Error('Reconstruct the state by replaying a lab experiment first.');
+  const {pose, ...paper} = state;
+  const {minX, maxX} = bounds(state.facets.flatMap(facet => currentPolygon(facet)));
+  const transform = paperTransform(pose);
+  const materialAxisX = (minX + maxX) / 2;
+  const axisX = transform.e + transform.a * materialAxisX;
+  // Preserve both offsets so even a translated sheet returns exactly when turned twice about the same axis.
+  const offsets = pose?.materialAxisX === materialAxisX ? pose : {
+    materialAxisX,
+    frontOffset: pose?.reversed ? transform.e - 2 * materialAxisX : transform.e,
+    backOffset: pose?.reversed ? transform.e : transform.e + 2 * materialAxisX,
+  };
+  const nextPose = {...offsets, reversed: !pose?.reversed};
+  const turned = nextPose.reversed || nextPose.frontOffset !== 0 ? {...paper, pose: nextPose} : paper;
+  return {state: verified(turned), axisX};
 }
 
 export function withMaterialMarks(state: PaperState, marks: readonly MaterialMark[]): PaperState {
@@ -393,7 +433,7 @@ export function withMaterialMarks(state: PaperState, marks: readonly MaterialMar
 /** Finite candidate set in the current folded bounds, in stable order. */
 export function propose(state: PaperState): Move[] {
   if (!verifiedStates.has(state)) return [];
-  const { minX, minY, maxX, maxY } = bounds(state.facets.flatMap(facet => currentPolygon(facet)));
+  const { minX, minY, maxX, maxY } = bounds(paperInView(state).facets.flatMap(facet => currentPolygon(facet)));
   const min = { x: minX, y: minY };
   const max = { x: maxX, y: maxY };
   const x = (min.x + max.x) / 2;

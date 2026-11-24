@@ -1,6 +1,6 @@
 import { EPS, distance, type Vec } from '../../vendor/origamio/src/geometry';
 import {
-  ENGINE_REVISION, NUMERICS, apply, canReverseFold, deepFreeze, initialState, reverseFold,
+  ENGINE_REVISION, NUMERICS, apply, canReverseFold, deepFreeze, initialState, reverseFold, turnPaper,
   withMaterialMarks, type Move, type PaperState, type Validation,
 } from './engine';
 import { materialIntersections } from './material-points';
@@ -17,6 +17,10 @@ export type Attempt = {
 } | {
   readonly operation: 'unfold';
   readonly move: { readonly foldAttempt: number; readonly label: 'Unfold' };
+  readonly validatorVersion?: never;
+} | {
+  readonly operation: 'flip';
+  readonly move: { readonly axisX: number; readonly label: 'Flip over' };
   readonly validatorVersion?: never;
 } | {
   readonly operation: 'mark';
@@ -118,6 +122,19 @@ export function recordUnfold(experiment: Experiment): Experiment {
   });
 }
 
+export function canFlip(experiment: Experiment): boolean {
+  return experiment.attempts.length < MAX_ATTEMPTS;
+}
+
+export function recordFlip(experiment: Experiment): Experiment {
+  requireHistorySpace(experiment);
+  const {state, axisX} = turnPaper(experiment.final);
+  return appendAttempt(experiment, {
+    operation: 'flip', move: {axisX, label: 'Flip over'}, state,
+    validation: {status: 'accepted', code: 'flip', reason: 'Turned the entire sheet over around its vertical center.'},
+  });
+}
+
 export function recordMark(experiment: Experiment, point: Vec): Experiment {
   requireHistorySpace(experiment);
   const current = experiment.final;
@@ -210,6 +227,8 @@ export function importExperiment(text: string): Experiment {
         throw new Error(`Invalid unfold source at attempt ${index + 1}.`);
       }
       replay = recordUnfold(replay);
+    } else if (entry.operation === 'flip' && !legacy) {
+      replay = recordFlip(replay);
     } else if (entry.operation === 'mark' && !legacy) {
       replay = recordMark(replay, entry.move.point);
     } else if (entry.operation === 'remove-mark' && !legacy) {

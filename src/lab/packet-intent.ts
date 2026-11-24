@@ -2,6 +2,7 @@ import { EPS, apply, clipPolygon, signedDistance, type Line, type Side } from '.
 import { currentPolygon, type PaperState } from '../../vendor/origamio/src/paper';
 import { hinges } from '../../vendor/origamio/src/rigid';
 import type { MaterialPacket } from './packets';
+import { paperInView } from './paper-pose';
 
 function expand(seeds: Iterable<number>, links: ReadonlyMap<number, number[]>, within?: ReadonlySet<number>): Set<number> {
   const found = new Set(seeds);
@@ -14,8 +15,9 @@ function expand(seeds: Iterable<number>, links: ReadonlyMap<number, number[]>, w
 }
 
 /** Material hypotheses for an unchanged axis and moving side. The validator decides which can fold. */
-export function packetCandidates(state: PaperState, local: readonly MaterialPacket[], axis: Line, side: Side): MaterialPacket[] {
+export function packetCandidates(paper: PaperState, local: readonly MaterialPacket[], axis: Line, side: Side): MaterialPacket[] {
   if (!local.length) return [];
+  const state = paperInView(paper);
   const top = local[0].facetIds[0];
   const facets = new Map(state.facets.map(facet => [facet.id, facet]));
   const active = new Set(state.facets.filter(facet => {

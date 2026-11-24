@@ -4,7 +4,7 @@ import {
 } from '../../vendor/origamio/src/geometry';
 import { currentPolygon } from '../../vendor/origamio/src/paper';
 import { snapTargets } from '../../vendor/origamio/src/snap';
-import type { LineReference, Move, PaperState } from '../lab';
+import { paperInView, type LineReference, type Move, type PaperState } from '../lab';
 import { clipCrease, facetCreases } from '../lab/crease-references';
 import { materialIntersections, segmentIntersection, visibleMaterialMarks } from '../lab/material-points';
 
@@ -93,7 +93,8 @@ export interface MarkOption {
 }
 
 /** Stack order decides which projected corner can be picked at a shared screen position. */
-export function paperGeometry(state: PaperState) {
+export function paperGeometry(paper: PaperState) {
+  const state = paperInView(paper);
   const faces = [...state.facets].sort((a, b) => b.z - a.z).map(facet => ({
     facet, poly: orientCCW(currentPolygon(facet)), creases: facetCreases(state, facet),
   }));

@@ -3,8 +3,9 @@ import type { Vec } from '../vendor/origamio/src/geometry';
 import { foldedPoints } from '../vendor/origamio/src/paper';
 import { cameraViewBox, fitCamera, viewBox } from '../vendor/origamio/src/render';
 import {
-  DEFAULT_PAPER_STYLE, PAPER_STYLES, PRESETS, canUnfold, createExperiment, exportFold, importExperiment,
-  isPaperStyle, propose, recordMark, recordMove, recordRemoveMark, recordUnfold, serializeExperiment, setPaperStyle, stateAt, undoMove, validate,
+  DEFAULT_PAPER_STYLE, PAPER_STYLES, PRESETS, canFlip, canUnfold, createExperiment, exportFold, importExperiment,
+  isPaperStyle, paperInView, propose, recordFlip, recordMark, recordMove, recordRemoveMark, recordUnfold,
+  serializeExperiment, setPaperStyle, stateAt, undoMove, validate,
 } from './lab';
 import type { Experiment, Move, PaperStyle, Validation } from './lab';
 import { MAX_EXPERIMENT_LENGTH } from './lab/experiment';
@@ -34,6 +35,7 @@ const cancelFold = get<HTMLButtonElement>('cancel-fold');
 const cornerControl = get<HTMLSelectElement>('packet-corner');
 const countControl = get<HTMLSelectElement>('packet-count');
 const pinButton = get<HTMLButtonElement>('pin-point');
+const flipButton = get<HTMLButtonElement>('flip-paper');
 const solutionChoice = get<HTMLSelectElement>('solution-choice');
 const markButton = get<HTMLButtonElement>('mark-point');
 const markLayer = get<HTMLSelectElement>('mark-layer');
@@ -117,8 +119,8 @@ function drawOverlay() {
     line: { a: { x: move.line[0][0], y: move.line[0][1] }, b: { x: move.line[1][0], y: move.line[1][1] } },
     side: move.side,
   });
-  const endpoint = option?.result.validation.status === 'accepted' ? option.result.state : undefined;
-  const state = stateAt(experiment, cursor);
+  const endpoint = option?.result.validation.status === 'accepted' ? paperInView(option.result.state) : undefined;
+  const state = paperInView(stateAt(experiment, cursor));
   const selection = gestures.selection();
   const unit = pixelUnit();
   const landings = interpretations.filter(({result}) => result.validation.status === 'accepted')
@@ -257,7 +259,8 @@ function settleDraft(draft: Draft) {
 }
 
 function displayDrawing() {
-  const state = stateAt(experiment, cursor);
+  const model = stateAt(experiment, cursor);
+  const state = paperInView(model);
   const style = experiment.appearance.paperStyle;
   get('folded-view').setAttribute('aria-pressed', String(!creaseView));
   get('crease-view').setAttribute('aria-pressed', String(creaseView));
@@ -267,6 +270,8 @@ function displayDrawing() {
     button.disabled = !editable();
   }
   snapToggle.disabled = !editable();
+  flipButton.disabled = !editable() || !canFlip(experiment);
+  flipButton.setAttribute('aria-pressed', String(Boolean(model.pose?.reversed)));
   get('sheet-caption').textContent = `${state.facets.length} ${state.facets.length === 1 ? 'facet' : 'facets'} · ${state.foldCount} ${state.foldCount === 1 ? 'fold' : 'folds'}`;
   paper.setAttribute('aria-label', creaseView ? 'Unfolded paper and crease pattern' : 'Current folded paper');
   // Keep the original square in the frame so a flap can open back into it.
@@ -455,6 +460,15 @@ countControl.addEventListener('change', () => {
   gestures.selectCount(value === 'all' ? 'all' : value ? Number(value) : undefined);
 });
 pinButton.addEventListener('click', () => gestures.togglePin());
+flipButton.addEventListener('click', () => {
+  if (!editable() || !canFlip(experiment)) return;
+  try {
+    const next = recordFlip(experiment);
+    replaceExperiment(next, next.attempts.length);
+  } catch (error) {
+    notify((error as Error).message, true);
+  }
+});
 markLayer.addEventListener('change', () => {
   gestureStatus();
   drawOverlay();

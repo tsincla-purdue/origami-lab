@@ -161,8 +161,10 @@ select:disabled { opacity: .65; cursor: default; }
   padding: 9px 19px;
 }
 .paper-toolbar { justify-content: space-between; padding-top: 0; }
+.paper-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .paper-toolbar button { min-height: 40px; }
 #pin-point[aria-pressed="true"] { background: #fff3d8; border-color: #c89331; color: #6b450c; }
+#flip-paper[aria-pressed="true"] { background: #f3eefc; border-color: var(--accent); color: var(--accent-dark); }
 .snap-toggle {
   display: inline-flex;
   align-items: center;
