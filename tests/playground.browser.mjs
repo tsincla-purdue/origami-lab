@@ -969,7 +969,7 @@ test('an offset tap marks an exact crease crossing and the dot can be pinned, sn
   await expect(page.locator('#gesture-status')).toHaveText('accepted');
   expect(Number(await page.locator('.drag-destination').getAttribute('cx'))).toBeCloseTo(0, 12);
   await page.mouse.up();
-  await expect(page.locator('#history li').last()).toContainText('Point onto line');
+  await expect(page.locator('#history li').last()).toContainText('Perpendicular through point');
   await unfold.click();
   await page.locator('#paper').scrollIntoViewIfNeeded();
   const slope = 2 * y;
@@ -1000,6 +1000,66 @@ test('an offset tap marks an exact crease crossing and the dot can be pinned, sn
   expect(removed.attempts.at(-1)).toMatchObject({operation: 'remove-mark', move: {markAttempt: 5}});
   await verifyReplayAndUndo(page, removed);
   await expect(dot).toHaveAttribute('data-mark-id', '5');
+});
+
+test('drags a marked point along its crease through an on-line pin to a landing beyond the segment', async ({page}) => {
+  const unfold = page.getByRole('button', {name: 'Unfold', exact: true});
+  await dragCorner(page, [1, 0], [0, 0]);
+  await unfold.click();
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await dragCorner(page, [0, 0], [0, .8]);
+  await unfold.click();
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  const scored = await downloadJSON(page, 'Export experiment');
+  await tapCorner(page, [.5, scored.final.creases[1].a.y], 6);
+  await page.getByRole('button', {name: 'Mark point', exact: true}).click();
+  const file = await downloadJSON(page, 'Export experiment');
+  const {point} = file.final.marks[0];
+
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  const pin = await screenPoint(page, .5, .83);
+  await page.mouse.move(pin.x, pin.y);
+  await page.mouse.down();
+  await expect(page.locator('.pin-anchor')).toHaveAttribute('cx', '0.5');
+  const pinY = Number(await page.locator('.pin-anchor').getAttribute('cy'));
+  await page.mouse.up();
+  await startMouseDrag(page, [point.x, point.y], [.508, .72]);
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  await expect(page.locator('.perpendicular-marker')).toBeVisible();
+  const landing = page.locator('.drag-destination');
+  expect(Number(await landing.getAttribute('cx'))).toBeCloseTo(.5, 12);
+  expect(Number(await landing.getAttribute('cy'))).toBeCloseTo(2 * pinY - point.y, 12);
+  expect(Number(await landing.getAttribute('cy'))).toBeGreaterThan(1);
+  await page.mouse.up();
+
+  const folded = await downloadJSON(page, 'Export experiment');
+  const attempt = folded.attempts.at(-1);
+  expect(attempt.validation.status).toBe('accepted');
+  expect(attempt.move.intent).toMatchObject({kind: 'perpendicular-point', moving: point,
+    pin: {x: .5, y: pinY}, source: {facetId: 0}});
+  expect(attempt.move.line.map(([, y]) => y)).toEqual([pinY, pinY]);
+  expect(attempt.move.packet.facetIds).toEqual([0]);
+  const {b, d, f} = folded.final.facets.at(-1).transform;
+  expect(b * point.x + d * point.y + f).toBeCloseTo(2 * pinY - point.y, 12);
+  await verifyReplayAndUndo(page, folded);
+});
+
+test('grabs an edge midpoint as a point after pinning elsewhere', async ({page}) => {
+  const pinScreen = await screenPoint(page, .73, .46);
+  await page.mouse.move(pinScreen.x, pinScreen.y);
+  await page.mouse.down();
+  await expect(page.locator('.pin-anchor')).toBeVisible();
+  const x = Number(await page.locator('.pin-anchor').getAttribute('cx'));
+  await page.mouse.up();
+  await startMouseDrag(page, [.5, 1], [.8, .994]);
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  await expect(page.locator('.perpendicular-marker')).toBeVisible();
+  expect(Number(await page.locator('.drag-destination').getAttribute('cx'))).toBeCloseTo(2 * x - .5, 12);
+  await page.mouse.up();
+  const file = await downloadJSON(page, 'Export experiment');
+  expect(file.attempts[0].move.intent).toMatchObject({
+    kind: 'perpendicular-point', moving: {x: .5, y: 1}, source: {facetId: 0},
+  });
 });
 
 test('holding with a pen pins an interior point and holding it again unpins', async ({page, context}) => {
@@ -1042,6 +1102,46 @@ test('paper preference survives reload and presets, and round-trips through expo
 test.describe('touch', () => {
   const { defaultBrowserType, ...touchDevice } = devices['iPhone 13'];
   test.use(touchDevice);
+
+  test('drags the marked crease point on the exposed ply of an overlapping stack', async ({page, context}) => {
+    const session = await context.newCDPSession(page);
+    const event = (type, point) => session.send('Input.dispatchTouchEvent', {type, touchPoints: point ? [point] : []});
+    const begin = async (from, to) => {
+      await page.locator('#paper').scrollIntoViewIfNeeded();
+      await event('touchStart', await screenPoint(page, ...from));
+      await event('touchMove', await screenPoint(page, ...to));
+      await expect(page.locator('#gesture-status')).toHaveText('accepted');
+    };
+    await begin([0, 1], [0, 0]);
+    await event('touchEnd');
+    await page.getByRole('button', {name: 'Unfold', exact: true}).tap();
+    await page.locator('#paper').scrollIntoViewIfNeeded();
+    const edge = await screenPoint(page, 1, .5);
+    await page.touchscreen.tap(edge.x - 5, edge.y + 4);
+    await page.getByRole('button', {name: 'Mark point', exact: true}).tap();
+    await begin([1, 0], [0, 0]);
+    await event('touchEnd');
+    const dot = page.locator('#paper-marks .material-mark');
+    await expect(dot).toHaveAttribute('cx', '0');
+    const folded = await downloadJSON(page, 'Export experiment');
+    const [lower, upper] = folded.final.facets;
+
+    await page.locator('#paper').scrollIntoViewIfNeeded();
+    await event('touchStart', await screenPoint(page, .32, .24));
+    await expect(page.locator('.pin-anchor')).toBeVisible();
+    const pinX = Number(await page.locator('.pin-anchor').getAttribute('cx'));
+    await event('touchEnd');
+    await begin([0, .5], [.28, .503]);
+    await expect(page.locator('.perpendicular-marker')).toBeVisible();
+    expect(Number(await page.locator('.drag-destination').getAttribute('cx'))).toBeCloseTo(2 * pinX, 12);
+    await event('touchEnd');
+    const moved = await downloadJSON(page, 'Export experiment');
+    const {intent, packet} = moved.attempts.at(-1).move;
+    expect(intent).toMatchObject({kind: 'perpendicular-point', source: {facetId: upper.id}, moving: {x: 0, y: .5}});
+    expect(packet.facetIds).toEqual([upper.id]);
+    expect(moved.final.facets.find(({id}) => id === lower.id).transform).toEqual(lower.transform);
+    expect(moved.final.facets.at(-1).z).toBeGreaterThan(lower.z);
+  });
 
   test('touch flips a marked sheet and uses the mirrored point for snapping and pinning', async ({page, context}) => {
     const session = await context.newCDPSession(page);

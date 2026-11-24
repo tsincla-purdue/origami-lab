@@ -71,7 +71,10 @@ Hold a point to pin it, then grab a visible edge or crease and slide along
 that same line toward the other side of the pin. The crease goes through the
 pin at right angles to the line (O4). For example, hold the top midpoint of
 a square, then slide the bottom edge from left to right to fold at the center.
-Grabbing a corner or marked dot still starts a point drag.
+With a pin in place, you can also grab a corner, marked dot, or other snap
+point on a line and drag it along that line. The preview shows a right angle
+and snaps to the exact reflected point, which can lie beyond the visible
+segment. Dragging a point toward a different line still uses O5.
 
 Use **Flip over** to turn the entire folded sheet around its vertical center.
 The opposite faces and layers become accessible for folding. The turn is
@@ -238,10 +241,12 @@ epsilon (`1e-9`). `solvePerpendicularThroughPoint(point, line)` computes and
 verifies O4. Nearly parallel O3 directions and O4 orthogonality are checked
 against 64 binary64 epsilons in normalized directions.
 
-Use `resolveLineFold(intent)` to resolve the same finite-segment constraints
-used by dragging. Supply a `source` reference with its `facetId` and projected
-`line`, the grabbed point as `moving`, and either `kind: 'align-lines'` with a
-`target` reference or `kind: 'perpendicular'` with a `pin`. Pass a returned
+Use `resolveLineFold(intent)` to resolve the same line constraints used by
+dragging. Supply a `source` reference with its `facetId` and projected `line`,
+and the grabbed point as `moving`. Use `kind: 'align-lines'` with a `target`
+reference, or supply a `pin` with `kind: 'perpendicular'` for a line drag or
+`kind: 'perpendicular-point'` for a point drag along its line. The point drag
+allows a nontrivial landing anywhere on the supporting line. Pass a returned
 solution's resolved `line` and `side` with that `intent` to the normal move API.
 The physical validator still evaluates the selected packet. Replay checks
 that the recorded axis and side resolve from the intent. Older moves without

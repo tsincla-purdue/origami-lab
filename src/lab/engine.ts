@@ -84,7 +84,7 @@ function parseMove(value: unknown): FoldStep & { readonly packet?: MaterialPacke
   const step = parseStep(move);
   if (move.intent !== undefined) {
     const intent = move.intent;
-    if (!intent || (intent.kind !== 'align-lines' && intent.kind !== 'perpendicular') ||
+    if (!intent || (intent.kind !== 'align-lines' && intent.kind !== 'perpendicular' && intent.kind !== 'perpendicular-point') ||
         !resolveLineFold(intent).solutions.some(solution => solution.side === step.side &&
           distance(solution.line.a, step.line.a) === 0 && distance(solution.line.b, step.line.b) === 0)) {
       throw new Error('The crease must match the recorded line constraint.');

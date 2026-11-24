@@ -85,6 +85,14 @@ const segment = (a: Vec, b: Vec, cls: string) =>
 const circle = (p: Vec, radius: number, cls: string) =>
   `<circle class="${cls}" cx="${p.x}" cy="${p.y}" r="${radius}"/>`;
 
+function perpendicularMarker(draft: Draft, source: Line, unit: number) {
+  const foot = scale(add(draft.anchor, draft.destination), .5);
+  const along = scale(lineDirection(source), 9 * unit);
+  const across = scale(lineDirection(draft.line), 9 * unit);
+  const corner = add(foot, along);
+  return `<polyline class="perpendicular-marker" points="${points([corner, add(corner, across), add(foot, across)])}"/>`;
+}
+
 export function constraintMarkup(pin: Vec | undefined, draft: Draft | undefined, issue: ConstraintIssue | undefined, landings: readonly Vec[], unit: number) {
   const constraint = draft?.constraint;
   const line = constraint?.target ?? issue?.target;
@@ -94,6 +102,7 @@ export function constraintMarkup(pin: Vec | undefined, draft: Draft | undefined,
   const alternatives = [...others].map(point => circle(point, 6 * unit, 'alternative-landing')).join('');
   return (line ? segment(line.a, line.b, 'constraint-target') : '') +
     (source ? segment(source.a, source.b, 'constraint-source') : '') +
+    (source && draft?.lineIntent?.kind === 'perpendicular-point' ? perpendicularMarker(draft, source, unit) : '') +
     alternatives + (pin ? circle(pin, 6 * unit, 'pin-anchor') : '');
 }
 
