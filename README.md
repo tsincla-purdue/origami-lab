@@ -18,20 +18,26 @@ Open the address Vite prints and choose a **Paper style**. Grab a marked corner
 with a mouse, finger, or pen and move it onto a new point. You can also tap a
 point on the paper or an edge, then drag it. The dashed line is the perpendicular bisector of that motion. The
 shaded area shows the selected moving material, and the translucent paper
-shows the validated flat endpoint. Release to commit an accepted fold.
+shows the validated flat endpoint. Release to commit a unique accepted fold.
 
-Dragging a corner selects its top layer by default. Tap the same corner
-repeatedly to cycle through its connected packets. The highlighted facets and
+An ordinary drag tries the top material first. It also checks connected
+packets for the same crease, including flaps attached on the moving side.
+The preview highlights the smallest accepted packet. If more than one packet
+can move, use **Moving packet** after release to compare the previews and
+confirm your choice. Try a dog-ear from the upper-right corner to the center,
+then drag the lower-right corner straight to the lower-left.
+
+Tap the same corner repeatedly to explicitly select one of its connected
+packets. The highlighted facets and
 the **Layers** count show the current selection. Allow up to 3.5 seconds between
 taps. The selection remains available for a drag after that interval. Choose
 another corner to start at one layer again.
 
 The **Corner** and **Layers** controls offer the same selections by keyboard.
-Choose **Whole stack** before dragging to move all material on the chosen side,
-including any attached flaps. Try folding the upper-right corner to the center,
-choosing **Whole stack**, and dragging the lower-right corner to the lower-left.
-A selected packet can also be used in **Advanced Controls**. A successful fold
-or reset clears the selection.
+An explicit packet is used as selected, so a blocked fold shows its reason.
+**Automatic** enables packet inference again. **Whole stack** directly selects
+all material on the moving side. A selected packet can also be used in
+**Advanced Controls**. A successful fold or reset clears the selection.
 
 For an explicit crease, open **Advanced Controls** and select **Draw crease**.
 Drag to draw the line, then click or tap the side of
@@ -50,11 +56,13 @@ Select **Unfold** to reverse the most recent accepted fold while keeping its
 creases visible on the paper. For example, fold the square vertically in half
 and select **Unfold** to return to a flat square with a center crease.
 
-To construct an equilateral triangle on that square, tap the lower-left corner
-and select **Pin point**. Drag the lower-right corner near the center crease.
-The preview snaps to the exact landing point on the crease. If there are two
-landings, choose one under **Landing point**. Inspect the verdict and select
-**Confirm fold** to commit. **Cancel** and **Unpin point** clear the pin.
+To construct an equilateral triangle on that square, press and hold the
+lower-left corner until the pin appears. Release it, then drag the lower-right
+corner near the center crease. The preview snaps to the exact landing. Release
+to commit when there is a single accepted fold. For multiple accepted choices,
+pick a preview and select **Confirm fold**. You can also select a point and use
+**Pin point**, which keeps a confirmation step. Hold the pin again, use
+**Cancel** or **Unpin point**, or press **Escape** to clear it.
 
 Select a history row to browse a saved state. **Replay** plays from the initial
 square. At the history tip, **Undo** removes the last attempt from the history

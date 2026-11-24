@@ -172,9 +172,10 @@ test('reset clears the experiment and a corner immediately makes an asymmetric d
   expect(asymmetric.attempts[0].move.line).not.toEqual(centered.attempts[0].move.line);
 });
 
-test('a direct drag defaults to the top flap and an invalid partial drag leaves it fixed', async ({page, context}) => {
+test('an explicitly selected flap stays fixed on rejection and pen taps cycle layers', async ({page, context}) => {
   await dragCorner(page, [0, 1], [1, 1]);
   await expect(page.locator('#packet-status')).toBeEmpty();
+  await tapCorner(page, [1, 1]);
   await startMouseDrag(page, [1, 1], [1, 0]);
   await expect(page.locator('#packet-status')).toHaveText('1/2 layers');
   await expect(page.locator('.packet-moving')).toHaveCount(1);
@@ -193,9 +194,9 @@ test('a direct drag defaults to the top flap and an invalid partial drag leaves 
     }
   };
   await penTap();
-  await expect(page.locator('#packet-status')).toHaveText('1/2 layers');
-  await penTap();
   await expect(page.locator('#packet-status')).toHaveText('2/2 layers');
+  await penTap();
+  await expect(page.locator('#packet-status')).toHaveText('1/2 layers');
   await tapCorner(page, [1, 0]);
   await expect(page.locator('#packet-status')).toHaveText('1/2 layers');
   await startMouseDrag(page, [1, 0], [.02, 0]);
@@ -399,6 +400,88 @@ test('construction A uses Whole stack before grabbing a dog-eared sheet', async 
   await verifyReplayAndUndo(page, experiment);
 });
 
+test('pointer-only dog-ear carries the attached flap into a half-fold', async ({page}) => {
+  await page.getByRole('button', {name: 'Diagonal stripes'}).click();
+  await dragCorner(page, [1, 1], [.5, .5]);
+  const dog = await downloadJSON(page, 'Export experiment');
+  const flap = page.locator('#paper-art .paper-facet[data-id="1"]');
+  const points = await flap.getAttribute('points');
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+
+  await startMouseDrag(page, [1, 0], [0, 0]);
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  await expect(page.locator('.packet-moving')).toHaveCount(2);
+  await expect(page.locator('.packet-moving[data-facet-id="1"]')).toBeVisible();
+  await page.mouse.up();
+  await expect(page.locator('#sheet-caption')).toHaveText('3 facets · 2 folds');
+  await expect(flap).toHaveAttribute('points', points);
+  await expect(flap).toHaveAttribute('data-face', 'front');
+  expect((await renderedFacets(page)).map(({id}) => id)).toEqual([0, 1, 2]);
+  const experiment = await downloadJSON(page, 'Export experiment');
+  expect(experiment.attempts[1].move.packet.facetIds).toEqual([0, 1]);
+  expect(experiment.attempts[0]).toEqual(dog.attempts[0]);
+  expect(experiment.final.creases[0]).toEqual(dog.final.creases[0]);
+  expect(experiment.final.creases[1].a.x).toBe(.5);
+  expect(experiment.final.creases[1].b.x).toBe(.5);
+  const [triangle, neighbour] = [1, 2].map(id => experiment.final.facets.find(facet => facet.id === id));
+  const project = ({a, b, c, d, e, f}, {x, y}) => [a * x + c * y + e, b * x + d * y + f];
+  const {a: start, b: end} = experiment.final.creases[0];
+  for (const point of [start, end]) {
+    const [x, y] = project(triangle.transform, point);
+    const [u, v] = project(neighbour.transform, point);
+    expect(Math.hypot(x - u, y - v)).toBeLessThan(1e-12);
+  }
+  await verifyReplayAndUndo(page, experiment);
+  await expect(page.locator('#style-name')).toHaveText('Diagonal stripes');
+});
+
+test('a deliberate layer tap keeps the local packet even if its fold is blocked', async ({page}) => {
+  await dragCorner(page, [1, 1], [.5, .5]);
+  await tapCorner(page, [1, 0]);
+  await startMouseDrag(page, [1, 0], [0, 0]);
+  await expect(page.locator('#gesture-status')).toHaveText('rejected');
+  await expect(page.locator('.packet-moving')).toHaveCount(1);
+  await page.mouse.up();
+  await expect(page.locator('#gesture-reason')).toContainText('shared material edges');
+  await expect(page.locator('#history-count')).toHaveText('1 attempt');
+});
+
+test('an ordinary upper flap drag leaves the lower layer stationary', async ({page}) => {
+  await dragCorner(page, [1, 1], [0, 1]);
+  const folded = await renderedFacets(page);
+  await startMouseDrag(page, [0, 1], [.4, 1]);
+  await expect(page.locator('.packet-moving')).toHaveCount(1);
+  await expect(page.locator('.packet-moving')).toHaveAttribute('data-facet-id', '1');
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  await page.mouse.up();
+  await expect(page.locator('#sheet-caption')).toHaveText('3 facets · 2 folds');
+  expect((await renderedFacets(page))[0]).toEqual(folded[0]);
+  expect((await downloadJSON(page, 'Export experiment')).attempts[1].move.packet.facetIds).toEqual([1]);
+});
+
+test('two admissible packets offer previews and prefer the smaller one', async ({page}) => {
+  await dragCorner(page, [0, 1], [1, 1]);
+  await dragCorner(page, [.5, 1], [1, 1]);
+  await expect(page.locator('#sheet-caption')).toHaveText('4 facets · 2 folds');
+  await startMouseDrag(page, [1, 1], [.51, 1]);
+  await expect(page.locator('.snap-active')).toHaveAttribute('cx', '0.5');
+  await expect(page.locator('.packet-moving')).toHaveCount(2);
+  const axis = await page.locator('.preview-line').getAttribute('x1');
+  await page.mouse.up();
+  await expect(page.locator('#history-count')).toHaveText('2 attempts');
+  const choice = page.getByRole('combobox', {name: 'Moving packet', exact: true});
+  await expect(choice.locator('option')).toHaveText(['2 connected facets', '3 connected facets']);
+  await expect(choice).toHaveValue('0');
+  await choice.selectOption('1');
+  await expect(page.locator('.packet-moving')).toHaveCount(3);
+  await expect(page.locator('.preview-line')).toHaveAttribute('x1', axis);
+  await page.getByRole('button', {name: 'Confirm fold'}).click();
+  const experiment = await downloadJSON(page, 'Export experiment');
+  expect(experiment.attempts[2].move.packet.facetIds).toEqual([1, 2, 3]);
+  expect(experiment.final.facets.find(({id}) => id === 0).transform)
+    .toEqual(experiment.attempts[1].state.facets.find(({id}) => id === 0).transform);
+});
+
 test('construction B unfolds the square and retains the crease until Undo removes the original fold', async ({page}, testInfo) => {
   await page.getByRole('button', {name: 'Square grid'}).click();
   await dragCorner(page, [1, 0], [0, 0]);
@@ -462,8 +545,11 @@ test('ordinary point selection and dragging an edge midpoint offer both finite l
   await dragCorner(page, [1, 0], [0, 0]);
   await page.getByRole('button', {name: 'Unfold', exact: true}).click();
   await page.locator('#paper').scrollIntoViewIfNeeded();
-  await tapCorner(page, [.6, .5]);
-  await page.getByRole('button', {name: 'Pin point', exact: true}).click();
+  const pin = await screenPoint(page, .6, .5);
+  await page.mouse.move(pin.x, pin.y);
+  await page.mouse.down();
+  await expect(page.locator('.pin-anchor')).toBeVisible({timeout: 2000});
+  await page.mouse.up();
   await tapCorner(page, [1, .5]);
   await dragCorner(page, [1, .5], [.5, .8]);
   const choices = page.getByRole('combobox', {name: 'Landing point', exact: true});
@@ -474,6 +560,57 @@ test('ordinary point selection and dragging an edge midpoint offer both finite l
   await expect(page.locator('.alternative-landing')).toBeVisible();
   await page.getByRole('button', {name: 'Confirm fold'}).click();
   await expect(page.locator('#history li').last()).toContainText('Point onto line');
+});
+
+test('pointer-only hold and drag commits the unique equilateral landing on release', async ({page}) => {
+  await page.getByRole('button', {name: 'Diagonal stripes'}).click();
+  await dragCorner(page, [1, 0], [0, 0]);
+  await page.getByRole('button', {name: 'Unfold', exact: true}).click();
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  const pin = await screenPoint(page, 0, 0);
+  await page.mouse.move(pin.x, pin.y);
+  await page.mouse.down();
+  await expect(page.locator('.pin-anchor')).toBeVisible({timeout: 2000});
+  await page.mouse.up();
+  await expect(page.locator('.pin-anchor')).toHaveAttribute('cx', '0');
+  await expect(page.locator('.pin-anchor')).toHaveAttribute('cy', '0');
+
+  await startMouseDrag(page, [1, 0], [.52, .79]);
+  await expect(page.locator('.constraint-target')).toHaveAttribute('x1', '0.5');
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  expect(Number(await page.locator('.drag-destination').getAttribute('cy'))).toBeCloseTo(Math.sqrt(3) / 2, 12);
+  await page.mouse.up();
+  await expect(page.locator('.pin-anchor')).toHaveCount(0);
+  await expect(page.locator('#history li').last()).toContainText('Point onto line');
+  const experiment = await downloadJSON(page, 'Export experiment');
+  const {a, b, e, f} = experiment.final.facets.at(-1).transform;
+  const [[x1, y1], [x2, y2]] = experiment.attempts[2].move.line;
+  expect(Math.abs(x1 * y2 - y1 * x2)).toBeLessThan(1e-12);
+  const landing = [a + e, b + f];
+  expect(Math.hypot(e, f)).toBeLessThan(1e-12);
+  expect(landing[0]).toBeCloseTo(.5, 12);
+  expect(landing[1]).toBeCloseTo(Math.sqrt(3) / 2, 12);
+  expect(Math.hypot(...landing)).toBeCloseTo(1, 12);
+  expect(Math.hypot(landing[0] - 1, landing[1])).toBeCloseTo(1, 12);
+  await expect(page.locator('#paper-art .paper-facet').last()).toHaveAttribute('data-face', 'back');
+  await verifyReplayAndUndo(page, experiment);
+  await expect(page.locator('.paper-reference')).toHaveAttribute('x1', '0.5');
+});
+
+test('holding with a pen pins an interior point and holding it again unpins', async ({page, context}) => {
+  const session = await context.newCDPSession(page);
+  const point = await screenPoint(page, .31, .37);
+  const pen = type => session.send('Input.dispatchMouseEvent', {
+    type, ...point, pointerType: 'pen', button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1,
+  });
+  await pen('mousePressed');
+  await expect(page.locator('.pin-anchor')).toBeVisible({timeout: 2000});
+  await pen('mouseReleased');
+  expect(Number(await page.locator('.pin-anchor').getAttribute('cx'))).toBeCloseTo(.31, 4);
+  await pen('mousePressed');
+  await expect(page.locator('.pin-anchor')).toHaveCount(0, {timeout: 2000});
+  await pen('mouseReleased');
+  await expect(page.locator('#history-count')).toHaveText('0 attempts');
 });
 
 test('paper preference survives reload and presets, and round-trips through exports', async ({page}) => {
@@ -500,6 +637,28 @@ test('paper preference survives reload and presets, and round-trips through expo
 test.describe('touch', () => {
   const { defaultBrowserType, ...touchDevice } = devices['iPhone 13'];
   test.use(touchDevice);
+
+  test('touch hold and drag fold onto a crease without confirmation controls', async ({page, context}) => {
+    const session = await context.newCDPSession(page);
+    const touch = (type, point) => session.send('Input.dispatchTouchEvent', {
+      type, touchPoints: point ? [point] : [],
+    });
+    await touch('touchStart', await screenPoint(page, 1, 0));
+    await touch('touchMove', await screenPoint(page, 0, 0));
+    await touch('touchEnd');
+    await page.getByRole('button', {name: 'Unfold', exact: true}).tap();
+    await page.locator('#paper').scrollIntoViewIfNeeded();
+    await touch('touchStart', await screenPoint(page, 0, 0));
+    await expect(page.locator('.pin-anchor')).toBeVisible({timeout: 2000});
+    await touch('touchEnd');
+    await touch('touchStart', await screenPoint(page, 1, 0));
+    await touch('touchMove', await screenPoint(page, .5, .8));
+    await expect(page.locator('#gesture-status')).toHaveText('accepted');
+    expect(Number(await page.locator('.drag-destination').getAttribute('cy'))).toBeCloseTo(Math.sqrt(3) / 2, 12);
+    await touch('touchEnd');
+    await expect(page.locator('#history li').last()).toContainText('Point onto line');
+    await expect(page.locator('#confirm-fold')).toBeHidden();
+  });
 
   test('a touch drag snaps to the retained crease with a pin', async ({page, context}) => {
     const session = await context.newCDPSession(page);

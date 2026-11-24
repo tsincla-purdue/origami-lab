@@ -1,6 +1,6 @@
 import { add, clipPolygon, lineDirection, scale, type Line, type Polygon, type Vec } from '../../vendor/origamio/src/geometry';
 import { currentPolygon, isFlipped, type PaperState } from '../../vendor/origamio/src/paper';
-import type { PaperStyle } from '../lab';
+import type { MaterialPacket, PaperStyle } from '../lab';
 import { facetCreases } from '../lab/crease-references';
 import { CORNER_HIT_RADIUS } from './geometry';
 import type { CornerSelection, Draft } from './gestures';
@@ -85,12 +85,13 @@ const segment = (a: Vec, b: Vec, cls: string) =>
 const circle = (p: Vec, radius: number, cls: string) =>
   `<circle class="${cls}" cx="${p.x}" cy="${p.y}" r="${radius}"/>`;
 
-export function constraintMarkup(pin: Vec | undefined, draft: Draft | undefined, target: Line | undefined, unit: number) {
+export function constraintMarkup(pin: Vec | undefined, draft: Draft | undefined, target: Line | undefined, landings: readonly Vec[], unit: number) {
   if (!pin) return '';
   const constraint = draft?.constraint;
   const line = constraint?.target ?? target;
-  const alternatives = constraint?.solutions.flatMap(({destination}, i) => i === constraint.index ? [] :
-    [circle(destination, 6 * unit, 'alternative-landing')]).join('') ?? '';
+  const others = new Set(landings);
+  if (draft) others.delete(draft.destination);
+  const alternatives = [...others].map(point => circle(point, 6 * unit, 'alternative-landing')).join('');
   return (line ? segment(line.a, line.b, 'constraint-target') : '') +
     alternatives + circle(pin, 6 * unit, 'pin-anchor');
 }
@@ -102,8 +103,8 @@ export function cornerHandles(corners: readonly Vec[], unit: number): string {
 
 export type FoldGuide = Pick<Draft, 'line' | 'side'> & Partial<Pick<Draft, 'anchor' | 'destination' | 'snapped'>>;
 
-export function packetMarkup(state: PaperState, selection: CornerSelection, draft: FoldGuide | undefined, unit: number): string {
-  const packet = selection.packets.find(choice => choice.facetIds.length === selection.count);
+export function packetMarkup(state: PaperState, selection: CornerSelection, draft: FoldGuide | undefined, unit: number, inferred?: MaterialPacket): string {
+  const packet = inferred ?? selection.packets.find(choice => choice.facetIds.length === selection.count);
   const selected = new Set(packet?.facetIds ?? state.facets.map(facet => facet.id));
   const cutting = draft?.side !== undefined;
   const highlights = state.facets.filter(facet => selected.has(facet.id)).map(facet => {

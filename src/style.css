@@ -201,7 +201,7 @@ select:disabled { opacity: .65; cursor: default; }
   height: clamp(290px, min(44vw, 100svh - 350px), 468px);
   overflow: hidden;
 }
-#paper { display: block; width: 100%; height: 100%; }
+#paper { display: block; width: 100%; height: 100%; user-select: none; }
 #paper[data-tool="crease"] { touch-action: none; cursor: crosshair; }
 #paper-preview, .corner-dot { pointer-events: none; }
 .corner-touch { fill: transparent; touch-action: none; cursor: grab; }
