@@ -5,6 +5,8 @@ export interface Attempt {
   readonly move: Move;
   readonly validation: Validation;
   readonly state: PaperState;
+  /** Preserve a historical clearance decision while later attempts use the current validator. */
+  readonly validatorVersion?: 1;
 }
 
 export interface Experiment {
@@ -41,16 +43,28 @@ export function setPaperStyle(experiment: Experiment, paperStyle: PaperStyle): E
 
 /** Record an attempted action. Only an accepted action changes the paper. */
 export function recordMove(experiment: Experiment, move: Move): Experiment {
+  return appendMove(experiment, move);
+}
+
+function appendMove(experiment: Experiment, move: Move, validatorVersion?: 1): Experiment {
   if (experiment.attempts.length >= MAX_ATTEMPTS) {
     throw new Error(`An experiment can contain up to ${MAX_ATTEMPTS} attempts.`);
   }
   const snapshot = deepFreeze(JSON.parse(JSON.stringify(move)) as Move);
-  const result = apply(experiment.final, snapshot);
+  const result = apply(experiment.final, snapshot, validatorVersion);
+  const retainsClearance = validatorVersion === 1 && result.validation.code === 'hinge-cover';
+  const attempt: Attempt = { move: snapshot, ...result, ...(retainsClearance && {validatorVersion}) };
   return deepFreeze({
     ...experiment,
-    attempts: [...experiment.attempts, { move: snapshot, ...result }],
+    attempts: [...experiment.attempts, attempt],
     final: result.state,
   });
+}
+
+export function undoMove(experiment: Experiment): Experiment {
+  if (!experiment.attempts.length) return experiment;
+  const attempts = experiment.attempts.slice(0, -1);
+  return deepFreeze({ ...experiment, attempts, final: stateAt(experiment, attempts.length) });
 }
 
 export function stateAt(experiment: Experiment, cursor: number): PaperState {
@@ -89,7 +103,8 @@ export function importExperiment(text: string): Experiment {
   const paperStyle = file.appearance === undefined ? DEFAULT_PAPER_STYLE : file.appearance?.paperStyle;
   if (!isPaperStyle(paperStyle)) throw new Error('Unknown paper style.');
   let replay = createExperiment(paperStyle);
-  if (!matches(replay.engine, file.engine) || !matches(replay.numerics, file.numerics)) {
+  const legacy = matches({ ...NUMERICS, validatorVersion: 1 }, file.numerics);
+  if (!matches(replay.engine, file.engine) || (!legacy && !matches(replay.numerics, file.numerics))) {
     throw new Error('The engine revision or numerical policy differs from this build.');
   }
   if (!matches(replay.initial, file.initial) || !Array.isArray(file.attempts) ||
@@ -100,7 +115,11 @@ export function importExperiment(text: string): Experiment {
     if (!entry || !entry.move || typeof entry.move !== 'object' || Array.isArray(entry.move)) {
       throw new Error(`Invalid move at attempt ${index + 1}.`);
     }
-    replay = recordMove(replay, entry.move);
+    if (entry.validatorVersion !== undefined &&
+        (entry.validatorVersion !== 1 || entry.validation?.code !== 'hinge-cover')) {
+      throw new Error(`Invalid validator version at attempt ${index + 1}.`);
+    }
+    replay = appendMove(replay, entry.move, legacy ? 1 : entry.validatorVersion);
     const actual = replay.attempts[index];
     if (!matches(actual.validation, entry.validation) || !matches(actual.state, entry.state)) {
       throw new Error(`Validation or state mismatch at attempt ${index + 1}.`);
