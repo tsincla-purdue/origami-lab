@@ -42,8 +42,10 @@ corner's exact landing point across it. A green ring marks the snap target.
 Turn off snapping for arbitrary destinations or hold **Alt** while using a mouse. Open **Advanced
 Controls** to preview and record the original command-based folds.
 
-Select a history row or use **Undo** to move back one attempt. **Replay** plays
-from the initial square. **Reset paper** clears the history and restores the
+Select a history row to browse a saved state. **Replay** plays from the initial
+square. At the history tip, **Undo** removes the last attempt from the history
+and JSON export and leaves the retained state ready for a new fold. **Reset paper**
+clears the history and restores the
 initial square in the selected style, ready to fold again. Continue folding
 from the latest step in **Folded** view.
 **New experiment** starts a fresh history. Presets load at their initial
@@ -164,11 +166,15 @@ with no guarantee for finite-thickness paper.
 
 For a partial move, the moving pieces must be connected by material edges.
 The packet must be exposed on the side it swings through at the start, and
-unselected paper must clear the fixed hinge. In the open interval of rotation,
+unselected paper must clear the fixed hinge. A stationary sheet may cross the
+projection of a new crease when both incident pieces come from the same facet
+and the stationary sheet stays on the opposite side of both pieces at launch
+and landing. In the open interval of rotation,
 off-axis moving points are off the stationary plane. At landing the packet
 rests on the same exterior side of the fixed material, with its order reversed.
-This verifies both opening the top flap of a half-fold and opening the top
-two connected layers of a quarter-fold.
+This verifies opening the top flap of a half-fold, adding a new crease to it
+above the stationary lower sheet, and opening the top two connected layers of
+a quarter-fold.
 
 - **Rejected** covers malformed moves, no-ops, torn hinges, and detected hinge
   obstructions, as well as packets buried under stationary paper in the
@@ -193,7 +199,9 @@ each attempt, the final state, the full
 Origamio revision, and the numerical policy. Proposal generation and execution
 use no randomness. Import checks the engine and policy, reruns the move log,
 and compares each recorded outcome, intermediate snapshot, and final state to
-the replay. Determinism is tested on the same build and JavaScript runtime.
+the replay. Archived hinge-clearance decisions retain their original validator
+version on import. New attempts use the current validator. Determinism is tested
+on the same build and JavaScript runtime.
 A runtime with different floating-point results can report a replay mismatch.
 Experiments are limited to 256 attempts and 128 facets per state.
 

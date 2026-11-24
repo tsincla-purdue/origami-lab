@@ -4,7 +4,7 @@ import { foldedPoints } from '../vendor/origamio/src/paper';
 import { cameraViewBox, fitCamera, viewBox } from '../vendor/origamio/src/render';
 import {
   DEFAULT_PAPER_STYLE, PAPER_STYLES, PRESETS, apply, createExperiment, exportFold, importExperiment,
-  isPaperStyle, propose, recordMove, serializeExperiment, setPaperStyle, stateAt, validate,
+  isPaperStyle, propose, recordMove, serializeExperiment, setPaperStyle, stateAt, undoMove, validate,
 } from './lab';
 import type { Experiment, Move, PaperStyle, Validation } from './lab';
 import { MAX_EXPERIMENT_LENGTH } from './lab/experiment';
@@ -293,7 +293,7 @@ function render() {
   displayDrawing();
   renderCandidate();
 
-  undo.disabled = cursor === 0;
+  undo.disabled = !atTip() || !experiment.attempts.length;
   replay.disabled = experiment.attempts.length === 0;
   get('replay-label').textContent = playback === undefined ? 'Replay' : 'Pause';
 }
@@ -381,7 +381,11 @@ cancelFold.addEventListener('click', clearGesture);
 document.addEventListener('keydown', event => { if (event.key === 'Escape') clearGesture(); });
 get('crease-view').addEventListener('click', () => { creaseView = true; clearGesture(); displayDrawing(); });
 get('folded-view').addEventListener('click', () => { creaseView = false; clearGesture(); displayDrawing(); });
-undo.addEventListener('click', () => seek(cursor - 1));
+undo.addEventListener('click', () => {
+  if (!atTip() || !experiment.attempts.length) return;
+  const retained = undoMove(experiment);
+  replaceExperiment(retained, retained.attempts.length);
+});
 reset.addEventListener('click', () => {
   creaseView = false;
   tool = 'corner';

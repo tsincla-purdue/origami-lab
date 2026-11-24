@@ -33,6 +33,22 @@ async function downloadJSON(page, name) {
   return JSON.parse(await readFile(await download.path(), 'utf8'));
 }
 
+async function importJSON(page, experiment) {
+  await page.locator('#import-file').setInputFiles({
+    name: 'experiment.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(experiment)),
+  });
+  await expect(page.locator('#notice')).toHaveText('Experiment imported and verified by replay.');
+}
+
+async function renderedFacets(page) {
+  return page.locator('#paper-art .paper-facet').evaluateAll(facets => facets.map(facet => ({
+    id: Number(facet.dataset.id),
+    face: facet.dataset.face,
+    points: facet.getAttribute('points'),
+    transform: facet.getAttribute('transform'),
+  })));
+}
+
 async function paperPixels(page, points) {
   return page.locator('#paper').evaluate(async (svg, points) => {
     const imageSvg = svg.cloneNode(true);
@@ -187,8 +203,9 @@ test('deliberate repeated taps wrap through a four-layer stack and hold the pack
   const experiment = await downloadJSON(page, 'Export experiment');
   expect(experiment.attempts[2].move.packet.facetIds).toEqual([2, 3]);
   expect(experiment.attempts[2].validation.code).toBe('packet-fold');
-  await page.getByRole('button', {name: 'Undo', exact: true}).click();
+  await page.locator('#history button').nth(2).click();
   await expect(page.locator('#sheet-caption')).toHaveText('4 facets · 2 folds');
+  await expect(page.getByRole('button', {name: 'Undo', exact: true})).toBeDisabled();
   await page.getByRole('button', {name: 'Replay', exact: true}).click();
   await expect(page.locator('#sheet-caption')).toHaveText('4 facets · 3 folds');
   expect(await downloadJSON(page, 'Export experiment')).toEqual(experiment);
@@ -214,7 +231,108 @@ test('keyboard packet controls also select the material for a drawn crease', asy
   expect(experiment.attempts[1].validation.code).toBe('packet-fold');
 });
 
-test('draw a crease, choose the moving side, confirm, undo and replay', async ({page}) => {
+test('Undo removes the last fold from history and export, then accepts a different second fold', async ({page}) => {
+  const undo = page.getByRole('button', {name: 'Undo', exact: true});
+  await dragCorner(page, [1, 1], [0, 1]);
+  const first = await downloadJSON(page, 'Export experiment');
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await dragCorner(page, [0, 1], [1, 1]);
+  await expect(page.locator('#sheet-caption')).toHaveText('2 facets · 2 folds');
+  const originalSecond = (await downloadJSON(page, 'Export experiment')).attempts[1].move;
+
+  await undo.click();
+  await expect(page.locator('#sheet-caption')).toHaveText('2 facets · 1 fold');
+  await expect(page.locator('#history li')).toHaveCount(2);
+  await expect(page.locator('#history li button').last()).toHaveAttribute('aria-current', 'step');
+  await expect(page.locator('#paper-handles .corner-touch')).toHaveCount(4);
+  expect(await downloadJSON(page, 'Export experiment')).toEqual(first);
+
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await dragCorner(page, [0, 0], [.4, 0]);
+  await expect(page.locator('#sheet-caption')).toHaveText('3 facets · 2 folds');
+  const updated = await downloadJSON(page, 'Export experiment');
+  expect(updated.attempts).toHaveLength(2);
+  expect(updated.attempts[0]).toEqual(first.attempts[0]);
+  expect(updated.attempts[1].move).not.toEqual(originalSecond);
+
+  await undo.click();
+  await undo.click();
+  await expect(page.locator('#history-count')).toHaveText('0 attempts');
+  await expect(page.locator('#sheet-caption')).toHaveText('1 facet · 0 folds');
+  await expect(page.locator('#paper-handles .corner-touch')).toHaveCount(4);
+  const empty = await downloadJSON(page, 'Export experiment');
+  expect(empty.attempts).toEqual([]);
+  expect(empty.final).toEqual(empty.initial);
+});
+
+test('right-to-left half-fold followed by a new crease in the upper flap', async ({page}, testInfo) => {
+  const capture = name => page.screenshot({path: testInfo.outputPath(name), fullPage: true});
+  const undo = page.getByRole('button', {name: 'Undo', exact: true});
+  await page.getByRole('button', {name: 'Diagonal stripes'}).click();
+  await capture('01-square.png');
+
+  await dragCorner(page, [1, 1], [0, 1]);
+  await expect(page.locator('#sheet-caption')).toHaveText('2 facets · 1 fold');
+  const folded = await renderedFacets(page);
+  expect(folded.map(({id, face}) => [id, face])).toEqual([[0, 'front'], [1, 'back']]);
+  await capture('02-half-fold.png');
+
+  await tapCorner(page, [0, 1]);
+  await expect(page.locator('#packet-status')).toHaveText('1/2 layers');
+  await expect(page.locator('.packet-highlight')).toHaveCount(1);
+  await expect(page.locator('.packet-highlight')).toHaveAttribute('data-facet-id', '1');
+  await capture('03-upper-flap.png');
+  await tapCorner(page, [0, 1]);
+  await expect(page.locator('#packet-status')).toHaveText('2/2 layers');
+  await expect(page.locator('.packet-highlight')).toHaveCount(2);
+  await tapCorner(page, [0, 1]);
+  await expect(page.locator('#packet-status')).toHaveText('1/2 layers');
+
+  await startMouseDrag(page, [0, 1], [.4, 1]);
+  await expect(page.locator('.packet-moving')).toHaveAttribute('data-facet-id', '1');
+  await expect(page.locator('.snap-active')).toHaveCount(0);
+  const creaseX = await page.locator('.preview-line').getAttribute('x1');
+  expect(Number(creaseX)).toBeCloseTo(.2, 4);
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  await expect(page.locator('#paper-preview .paper-facet')).toHaveCount(3);
+  await page.mouse.up();
+  await expect(page.locator('#sheet-caption')).toHaveText('3 facets · 2 folds');
+  const flap = await renderedFacets(page);
+  expect(flap[0]).toEqual(folded[0]);
+  expect(flap[1].face).toBe('back');
+  expect(flap[1].transform).toBe(folded[1].transform);
+  expect(flap[1].points).not.toBe(folded[1].points);
+  expect(flap[2].face).toBe('front');
+  await capture('04-flap-back.png');
+
+  const experiment = await downloadJSON(page, 'Export experiment');
+  expect(experiment.attempts[1].move.packet.facetIds).toEqual([1]);
+  expect(experiment.attempts[1].validation.code).toBe('packet-fold');
+  expect(experiment.final.creases).toHaveLength(2);
+  for (const end of ['a', 'b']) expect(experiment.final.creases[1][end].x).toBeCloseTo(.8, 4);
+  expect(experiment.final.facets[0]).toEqual(experiment.attempts[0].state.facets[0]);
+
+  await undo.click();
+  expect(await renderedFacets(page)).toEqual(folded);
+  await expect(page.locator('#history-count')).toHaveText('1 attempt');
+  page.on('dialog', dialog => dialog.accept());
+  await importJSON(page, experiment);
+  expect(await renderedFacets(page)).toEqual(flap);
+  await page.getByRole('button', {name: 'Replay', exact: true}).click();
+  await expect(page.locator('#sheet-caption')).toHaveText('3 facets · 2 folds');
+  expect(await renderedFacets(page)).toEqual(flap);
+  expect(await downloadJSON(page, 'Export experiment')).toEqual(experiment);
+
+  await undo.click();
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await tapCorner(page, [0, 1]);
+  await tapCorner(page, [0, 1]);
+  await dragCorner(page, [0, 1], [.4, 1]);
+  await expect(page.locator('#sheet-caption')).toHaveText('4 facets · 2 folds');
+  expect((await renderedFacets(page))[0].points).not.toBe(folded[0].points);
+});
+
+test('draw a crease, choose the moving side, confirm, browse and replay', async ({page}) => {
   await page.getByRole('button', {name: 'Draw crease'}).click();
   await startMouseDrag(page, [.5, .04], [.5, .96]);
   await page.mouse.up();
@@ -225,7 +343,7 @@ test('draw a crease, choose the moving side, confirm, undo and replay', async ({
   await expect(page.locator('#history-count')).toHaveText('0 attempts');
   await page.getByRole('button', {name: 'Confirm fold'}).click();
   await expect(page.locator('#history-count')).toHaveText('1 attempt');
-  await page.getByRole('button', {name: 'Undo', exact: true}).click();
+  await page.locator('#history button').first().click();
   await expect(page.locator('#sheet-caption')).toHaveText('1 facet · 0 folds');
   await page.getByRole('button', {name: 'Replay', exact: true}).click();
   await expect(page.locator('#sheet-caption')).toHaveText('2 facets · 1 fold');

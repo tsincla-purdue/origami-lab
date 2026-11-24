@@ -21,7 +21,7 @@ export type Validation = {
 export const ENGINE_REVISION = 'c28937855e8d4b08cd10c83b66689f3e94b924b2';
 
 export const NUMERICS = Object.freeze({
-  validatorVersion: 1,
+  validatorVersion: 2,
   precision: 'IEEE 754 binary64',
   paperSize: 1,
   engineEpsilon: EPS,
@@ -142,11 +142,12 @@ interface PacketPart {
   readonly rank: number;
 }
 
-function inspectPacket(before: PaperState, trial: FoldResult, step: FoldStep, selected?: ReadonlySet<number>): boolean {
+function inspectPacket(before: PaperState, trial: FoldResult, step: FoldStep, selected?: ReadonlySet<number>): Map<number, number> | undefined {
   const moved = new Set(trial.movedIds);
   const flip = reflection(step.line);
   const moving = new Map<number, PacketPart>();
   const staying = new Map<number, PacketPart>();
+  const splitSources = new Map<number, number>();
   let splitId = before.nextId;
 
   // Check material-space clipping against the same construction in folded space.
@@ -159,17 +160,18 @@ function inspectPacket(before: PaperState, trial: FoldResult, step: FoldStep, se
     const { positive, negative } = clipPolygon(poly, step.line);
     const { low, high } = interval(poly, step.line);
     if ((high > ON_LINE_EPS && !positive.length) || (low < -ON_LINE_EPS && !negative.length)) {
-      return false;
+      return;
     }
     const front = step.side === 1 ? positive : negative;
     const back = step.side === 1 ? negative : positive;
     if (front.length) {
       const id = back.length ? splitId++ : facet.id;
       moving.set(id, { poly: front.map(point => mapPoint(flip, point)), rank: facet.z });
+      if (back.length) splitSources.set(id, facet.id);
     }
     if (back.length) staying.set(facet.id, { poly: back, rank: facet.z });
   }
-  if (!moving.size || !staying.size || trial.state.facets.length !== moving.size + staying.size) return false;
+  if (!moving.size || !staying.size || trial.state.facets.length !== moving.size + staying.size) return;
 
   function checkOrder(parts: Map<number, PacketPart>, movingPacket: boolean) {
     const ranks = new Map<number, number>();
@@ -187,30 +189,34 @@ function inspectPacket(before: PaperState, trial: FoldResult, step: FoldStep, se
       index === 0 || (movingPacket ? rank < ordered[index - 1] : rank > ordered[index - 1]));
   }
 
-  if (!checkOrder(moving, true) || !checkOrder(staying, false)) return false;
+  if (!checkOrder(moving, true) || !checkOrder(staying, false)) return;
 
   const movingRanks = trial.state.facets.filter(f => moved.has(f.id)).map(f => f.z);
   const stationaryRanks = trial.state.facets.filter(f => !moved.has(f.id)).map(f => f.z);
   const position = step.options.placement === 'bottom'
     ? Math.max(...movingRanks) < Math.min(...stationaryRanks)
     : Math.min(...movingRanks) > Math.max(...stationaryRanks);
-  if (!position) return false;
+  if (!position) return;
 
   const join = hinges(trial.state);
   const inTrial = new Map(trial.state.facets.map(facet => [facet.id, facet]));
   const crossing = join.filter(hinge => moved.has(hinge.p) !== moved.has(hinge.q));
-  return crossing.length > 0 && crossing.every(hinge =>
-    onAxis(step.line, [hinge.a, hinge.b].map(p => mapPoint(inTrial.get(hinge.p)!.transform, p))));
+  if (crossing.length > 0 && crossing.every(hinge =>
+    onAxis(step.line, [hinge.a, hinge.b].map(p => mapPoint(inTrial.get(hinge.p)!.transform, p))))) return splitSources;
 }
 
-function checkPartialMotion(before: PaperState, trial: FoldResult, step: FoldStep, selected: ReadonlySet<number>): Validation | undefined {
+function checkPartialMotion(
+  before: PaperState, trial: FoldResult, step: FoldStep, selected: ReadonlySet<number>,
+  splitSources: ReadonlyMap<number, number>, legacyClearance: boolean,
+): Validation | undefined {
   const movingIds = new Set(trial.movedIds);
   if (!connected(movingIds, trial.state)) {
     return outcome('unverified', 'disconnected-packet', 'The moving pieces do not form one edge-connected material packet.');
   }
   const towardTop = step.options.placement !== 'bottom';
   const stationary = before.facets.filter(facet => !selected.has(facet.id))
-    .map(facet => ({ z: facet.z, poly: currentPolygon(facet) }));
+    .map(facet => ({ id: facet.id, z: facet.z, poly: currentPolygon(facet) }));
+  const oppositeSwing = (coverRank: number, rank: number) => towardTop ? coverRank < rank : coverRank > rank;
   for (const facet of before.facets.filter(facet => selected.has(facet.id))) {
     const cut = clipPolygon(currentPolygon(facet), step.line);
     const moving = step.side === 1 ? cut.positive : cut.negative;
@@ -221,20 +227,33 @@ function checkPartialMotion(before: PaperState, trial: FoldResult, step: FoldSte
   }
 
   const facets = new Map(trial.state.facets.map(facet => [facet.id, facet]));
+  const sources = new Map(before.facets.map(facet => [facet.id, facet]));
   const welds = hinges(trial.state).filter(hinge => movingIds.has(hinge.p) !== movingIds.has(hinge.q));
-  for (const {poly} of stationary) {
+  for (const {id, z, poly} of stationary) {
     const {low, high} = interval(poly, step.line);
     if (low >= -ON_LINE_EPS || high <= ON_LINE_EPS) continue;
     const crossing = chord(poly, step.line);
-    if (crossing && welds.some(({p, a, b}) => segmentsOverlap(
-      [mapPoint(facets.get(p)!.transform, a), mapPoint(facets.get(p)!.transform, b)], crossing, step.line,
-    ))) {
+    if (crossing && welds.some(({p, q, a, b}) => {
+      const first = facets.get(p)!;
+      const second = facets.get(q)!;
+      const edge = [mapPoint(first.transform, a), mapPoint(first.transform, b)];
+      if (!segmentsOverlap(edge, crossing, step.line)) return false;
+
+      // At a new crease, both incident pieces shared one rank before the split.
+      // A crossing sheet on the back of both pieces at launch and landing
+      // stays outside the closing hinge throughout the half-turn.
+      const [moving, fixed] = movingIds.has(p) ? [p, q] : [q, p];
+      const landingRank = facets.get(id)!.z;
+      return legacyClearance || splitSources.get(moving) !== fixed ||
+        !oppositeSwing(z, sources.get(fixed)!.z) ||
+        !oppositeSwing(landingRank, first.z) || !oppositeSwing(landingRank, second.z);
+    })) {
       return outcome('unverified', 'hinge-cover', 'Stationary paper spans the joined hinge, so its clearance cannot be verified.');
     }
   }
 }
 
-function evaluate(state: PaperState, move: unknown): { validation: Validation; trial?: FoldResult } {
+function evaluate(state: PaperState, move: unknown, legacyClearance = false): { validation: Validation; trial?: FoldResult } {
   let step: ReturnType<typeof parseMove>;
   try {
     step = parseMove(move);
@@ -292,11 +311,13 @@ function evaluate(state: PaperState, move: unknown): { validation: Validation; t
       return { validation: outcome('unverified', 'unsupported-stack', 'The motion of a partial stack or inside placement is unverified.') };
     }
     const foldedArea = trial.state.facets.reduce((total, facet) => total + area(currentPolygon(facet)), 0);
-    if (Math.abs(foldedArea - state.width * state.height) > auditArea || !inspectPacket(state, trial, step, partial)) {
+    const splitSources = Math.abs(foldedArea - state.width * state.height) <= auditArea
+      ? inspectPacket(state, trial, step, partial) : undefined;
+    if (!splitSources) {
       return { validation: outcome('unverified', 'packet-audit', 'The result could not be verified as two packets joined only along the fold axis.') };
     }
     if (partial) {
-      const obstruction = checkPartialMotion(state, trial, step, partial);
+      const obstruction = checkPartialMotion(state, trial, step, partial, splitSources, legacyClearance);
       if (obstruction) return { validation: obstruction };
       return { validation: outcome('accepted', 'packet-fold', 'The connected material packet can swing 180° on the exposed side of its fixed hinge.'), trial };
     }
@@ -310,8 +331,8 @@ export function validate(state: PaperState, move: unknown): Validation {
   return evaluate(state, move).validation;
 }
 
-export function apply(state: PaperState, move: unknown): {state: PaperState; validation: Validation} {
-  const { validation, trial } = evaluate(state, move);
+export function apply(state: PaperState, move: unknown, validatorVersion: 1 | 2 = NUMERICS.validatorVersion): {state: PaperState; validation: Validation} {
+  const { validation, trial } = evaluate(state, move, validatorVersion === 1);
   return { state: trial ? verified(trial.state) : state, validation };
 }
 

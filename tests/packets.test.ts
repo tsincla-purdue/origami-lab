@@ -4,13 +4,15 @@ import { currentPolygon } from '../vendor/origamio/src/paper';
 import { tears } from '../vendor/origamio/src/rigid';
 import {
   apply, cornerPackets, createExperiment, importExperiment, initialState, recordMove,
-  serializeExperiment, stateAt, validate, type Move, type PaperState,
+  serializeExperiment, stateAt, undoMove, validate, type Move, type PaperState,
 } from '../src/lab';
 import { packetHingeLanding } from '../src/lab/packets';
 
 const half: Move = { line: [[.5, 0], [.5, 1]], side: 1 };
 const quarter: Move = { line: [[0, .5], [1, .5]], side: -1 };
 const corner = {x: 1, y: 1};
+const rightHalf: Move = { ...half, side: -1 };
+const newFlapCrease: Move = {line: [[.2, 0], [.2, 1]], side: 1, packet: {facetIds: [1]}};
 
 function checkMotion(before: PaperState, after: PaperState, selected: readonly number[]) {
   expect(tears(after)).toBe(0);
@@ -112,6 +114,53 @@ describe('explicit material packets', () => {
     const blocked = apply(folded, {line: [[.25, 0], [.25, 1]], side: 1, packet: {facetIds: [0]}});
     expect(blocked.validation).toMatchObject({status: 'rejected', code: 'blocked-hinge'});
     expect(blocked.state).toBe(folded);
+  });
+
+  it('certifies a new upper-flap crease with a stationary lower sheet beneath it', () => {
+    const folded = apply(initialState(), rightHalf).state;
+    const result = apply(folded, newFlapCrease);
+    expect(result.validation.code).toBe('packet-fold');
+    expect(result.state.facets).toHaveLength(3);
+    expect(result.state.facets[0]).toEqual(folded.facets[0]);
+    expect(result.state.facets[1].transform).toBe(folded.facets[1].transform);
+    expect(result.state.creases).toHaveLength(2);
+    expect(result.state.creases[1].a.x).toBeCloseTo(.8);
+    expect(result.state.creases[1].b.x).toBeCloseTo(.8);
+    expect(tears(result.state)).toBe(0);
+    expect(result.state.facets.reduce((sum, facet) => sum + area(facet.poly), 0)).toBeCloseTo(1);
+
+    const both = apply(folded, {...newFlapCrease, packet: {facetIds: [0, 1]}});
+    expect(both.validation.status).toBe('accepted');
+    expect(both.state.facets[0].poly).not.toEqual(result.state.facets[0].poly);
+  });
+
+  it('certifies the mirrored underside swing and still rejects a buried swing', () => {
+    const folded = apply(initialState(), rightHalf).state;
+    const lower: Move = {...newFlapCrease, packet: {facetIds: [0]}};
+    const result = apply(folded, {...lower, placement: 'bottom'});
+    expect(result.validation.code).toBe('packet-fold');
+    expect(result.state.facets.at(-1)?.transform).toBe(folded.facets[1].transform);
+    expect(apply(folded, lower).validation.code).toBe('blocked-hinge');
+  });
+
+  it('replays a saved legacy hinge-cover attempt and applies new decisions only to new moves', () => {
+    const folded = recordMove(createExperiment('stripes'), rightHalf);
+    const legacy = apply(folded.final, newFlapCrease, 1);
+    expect(legacy.validation.code).toBe('hinge-cover');
+    const archived = {
+      ...folded, numerics: { ...folded.numerics, validatorVersion: 1 },
+      attempts: [...folded.attempts, {move: newFlapCrease, ...legacy}],
+    };
+    const restored = importExperiment(JSON.stringify(archived));
+    expect(restored.final).toBe(restored.attempts[0].state);
+    expect(restored.attempts[1].validatorVersion).toBe(1);
+    const continued = recordMove(restored, newFlapCrease);
+    expect(continued.attempts[2].validation.code).toBe('packet-fold');
+    expect(importExperiment(serializeExperiment(continued))).toEqual(continued);
+    const accepted = recordMove(folded, newFlapCrease);
+    expect(() => importExperiment(JSON.stringify({ ...accepted, numerics: archived.numerics }))).toThrow('attempt 2');
+    expect(undoMove(continued)).toEqual(restored);
+    expect(undoMove(restored)).toEqual(folded);
   });
 
   it('preserves the legacy result for rank-only partial attempts in stored experiments', () => {
