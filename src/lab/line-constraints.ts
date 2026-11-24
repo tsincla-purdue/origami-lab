@@ -78,12 +78,18 @@ export interface LineReference {
 
 export type LineFoldIntent = { readonly source: LineReference; readonly moving: Vec } & (
   { readonly kind: 'align-lines'; readonly target: LineReference } |
-  { readonly kind: 'perpendicular'; readonly pin: Vec }
+  { readonly kind: 'perpendicular' | 'perpendicular-point'; readonly pin: Vec }
 );
 
 const parameter = (line: Line, point: Vec) => dot(sub(point, line.a), lineDirection(line));
 
-/** Resolve a finite line-grab intent to the same axis and moving side for any caller. */
+export function containsLinePoint(line: Line, point: Vec): boolean {
+  if (!finite(point) || Math.abs(signedDistance(line, point)) > EPS) return false;
+  const position = parameter(line, point);
+  return position >= -EPS && position <= distance(line.a, line.b) + EPS;
+}
+
+/** Resolve a material line constraint to the same axis and moving side for any caller. */
 export function resolveLineFold(intent: LineFoldIntent): ConstraintResult {
   const source = intent.source.line;
   const target = intent.kind === 'align-lines' ? intent.target.line : source;
@@ -93,10 +99,20 @@ export function resolveLineFold(intent: LineFoldIntent): ConstraintResult {
     return {status: result.status === 'underdetermined' ? 'no-solution' : 'unverified', reason: result.reason, solutions: []};
   }
   const anchor = intent.moving;
-  const span = distance(source.a, source.b);
-  if (!finite(anchor) || Math.abs(signedDistance(source, anchor)) > EPS ||
-      parameter(source, anchor) < -EPS || parameter(source, anchor) > span + EPS) {
+  if (!containsLinePoint(source, anchor)) {
     return {status: 'unverified', reason: 'Grab a point on the selected finite paper segment.', solutions: []};
+  }
+  if (intent.kind === 'perpendicular-point') {
+    const [line] = result.axes;
+    if (Math.abs(signedDistance(line, anchor)) <= EPS) {
+      return {status: 'no-solution', reason: 'This point already lies on the perpendicular through the pin.', solutions: []};
+    }
+    const destination = apply(reflection(line), anchor);
+    if (!finite(destination) || Math.abs(signedDistance(source, destination)) > EPS) {
+      return {status: 'unverified', reason: 'The reflected point could not be verified on the source line.', solutions: []};
+    }
+    // Q must be on the visible material. Its image can lie anywhere on the supporting line.
+    return {status: 'solved', reason: '', solutions: [{line, destination, side: sideOf(line, anchor)}]};
   }
   const extent = distance(target.a, target.b);
   const solutions = result.axes.flatMap(line => {

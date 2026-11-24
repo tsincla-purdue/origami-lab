@@ -7,6 +7,7 @@ import { snapTargets } from '../../vendor/origamio/src/snap';
 import { paperInView, type LineReference, type Move, type PaperState } from '../lab';
 import { clipCrease, facetCreases } from '../lab/crease-references';
 import { materialIntersections, segmentIntersection, visibleMaterialMarks } from '../lab/material-points';
+import { containsLinePoint } from '../lab/line-constraints';
 
 export const CORNER_HIT_RADIUS = 22;
 export const MARK_HIT_RADIUS = 15;
@@ -29,6 +30,23 @@ export function nearestPoint(points: readonly Vec[], screen: Vec, transform: Mat
     }
   }
   return best;
+}
+
+/** Unlike a target segment hit, a pinned point can follow the extension of its own line. */
+export function nearestSupportingLine(lines: readonly LineReference[], screen: Vec, transform: Mat, radius: number) {
+  let closest: LineReference | undefined;
+  let best = radius;
+  for (const reference of lines) {
+    const a = apply(transform, reference.line.a);
+    const delta = sub(apply(transform, reference.line.b), a);
+    const extent = length(delta);
+    if (extent <= EPS) continue;
+    const gap = Math.abs(cross(delta, sub(screen, a))) / extent;
+    if (gap > best || (closest && gap === best)) continue;
+    closest = reference;
+    best = gap;
+  }
+  return closest;
 }
 
 export function nearestLine<T extends {readonly line: Line}>(
@@ -122,6 +140,15 @@ export function paperGeometry(paper: PaperState) {
   const lines = [...creaseLines, ...edges].sort((a, b) => a.layer - b.layer);
   let references: Vec[] | undefined;
   let exposed: LineReference[] | undefined;
+  function grabLines(): readonly LineReference[] {
+    return exposed ??= lines.flatMap(({line, layer}) => {
+      let segments = distance(line.a, line.b) > EPS ? [line] : [];
+      for (let upper = 0; upper < layer && segments.length; upper++) {
+        segments = segments.flatMap(segment => subtractCover(segment, faces[upper].poly));
+      }
+      return segments.map(line => ({line, facetId: faces[layer].facet.id}));
+    });
+  }
   return {
     corners,
     marked,
@@ -174,14 +201,9 @@ export function paperGeometry(paper: PaperState) {
       references = points;
       return references;
     },
-    grabLines(): readonly LineReference[] {
-      return exposed ??= lines.flatMap(({line, layer}) => {
-        let segments = distance(line.a, line.b) > EPS ? [line] : [];
-        for (let upper = 0; upper < layer && segments.length; upper++) {
-          segments = segments.flatMap(segment => subtractCover(segment, faces[upper].poly));
-        }
-        return segments.map(line => ({line, facetId: faces[layer].facet.id}));
-      });
+    grabLines,
+    pointSources(point: Vec, facetId: number) {
+      return grabLines().filter(reference => reference.facetId === facetId && containsLinePoint(reference.line, point));
     },
     snapLine(screen: Vec, transform: Mat, radius: number) {
       const hit = nearestLine(lines, screen, transform, radius, ({layer}, point) => visibleAt(point, layer));

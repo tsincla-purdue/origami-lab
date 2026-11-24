@@ -172,10 +172,12 @@ function gestureStatus() {
   status.className = `status-pill ${text}`;
   if (status.textContent !== text) status.textContent = text;
   const pin = gestures.pinned();
-  const message = verdict?.reason ?? constraintIssue?.reason ?? (creaseView ? 'Switch to Folded to use the fold tools.' :
+  const explanation = verdict?.status === 'accepted' && pending?.lineIntent?.kind === 'perpendicular-point'
+    ? 'The crease passes through the pin at a right angle to the grabbed line.' : verdict?.reason;
+  const message = explanation ?? constraintIssue?.reason ?? (creaseView ? 'Switch to Folded to use the fold tools.' :
     !atTip() ? 'Return to the last history step to continue folding.' :
     pending?.tool === 'crease' ? 'Tap the side of the line you want to move.' :
-    pin ? 'Drag a point toward a visible crease or edge.' :
+    pin ? 'Drag a point along its line, or toward another visible crease or edge.' :
     tool === 'crease' ? 'Draw a crease, then tap the side to move.' :
     gestures.selection() ? 'Drag the selected point or press and hold it to pin it.' :
     'Drag a corner or edge, tap to select layers, or press and hold a point to pin it.');

@@ -57,10 +57,16 @@ describe('line alignment', () => {
   it('identifies the exposed material when two folded line segments coincide', () => {
     const experiment = recordMove(createExperiment(), {line: [[.5, 0], [.5, 1]], side: 1});
     const [covered, exposed] = experiment.final.facets;
-    const lines = paperGeometry(experiment.final).grabLines();
+    const geometry = paperGeometry(experiment.final);
+    const lines = geometry.grabLines();
     const screen = {a: 100, b: 0, c: 0, d: 100, e: 0, f: 0};
     expect(nearestLine(lines, {x: 100, y: 45}, screen, 8)?.reference.facetId).toBe(exposed.id);
     expect(lines.every(({facetId}) => facetId !== covered.id)).toBe(true);
+    const point = {x: 1, y: .45};
+    expect(geometry.pointSources(point, exposed.id)).toEqual([{
+      facetId: exposed.id, line: expect.objectContaining({a: expect.objectContaining({x: 1}), b: expect.objectContaining({x: 1})}),
+    }]);
+    expect(geometry.pointSources(point, covered.id)).toEqual([]);
   });
 });
 
@@ -84,5 +90,37 @@ describe('perpendicular through point', () => {
     expect(resolveLineFold({kind: 'perpendicular', pin: {x: 2, y: 1}, source, moving: {x: .2, y: 0}}).status).toBe('no-solution');
     const axis = solvePerpendicularThroughPoint({x: 0, y: 1}, bottom).axes[0];
     expect(validate(createExperiment().final, {line: [[axis.a.x, axis.a.y], [axis.b.x, axis.b.y]], side: -1}).status).toBe('rejected');
+  });
+
+  it('reflects a grabbed point beyond its segment with an on-line or an off-line pin', () => {
+    const source = {line: {a: {x: 0, y: 0}, b: {x: .4, y: .4}}, facetId: 0};
+    const moving = {x: .2, y: .2};
+    for (const pin of [{x: .5, y: .5}, {x: 0, y: 1}]) {
+      const intent = {kind: 'perpendicular-point', source, moving, pin} as const;
+      const result = resolveLineFold(intent);
+      expect(result.status).toBe('solved');
+      expect(result.solutions).toHaveLength(1);
+      const [solution] = result.solutions;
+      expect(solution.destination.x).toBeCloseTo(.8, 12);
+      expect(solution.destination.y).toBeCloseTo(.8, 12);
+      expect(signedDistance(solution.line, pin)).toBeCloseTo(0, 12);
+      expect(dot(lineDirection(solution.line), lineDirection(source.line))).toBeCloseTo(0, 12);
+      expect(resolveLineFold({...intent, kind: 'perpendicular'}).status).toBe('no-solution');
+    }
+  });
+
+  it('excludes the stationary point, checks its source segment, and leaves physical rejection to the engine', () => {
+    const intent = {
+      kind: 'perpendicular-point', source: {line: bottom, facetId: 0},
+      moving: {x: .2, y: 0}, pin: {x: .2, y: .7},
+    } as const;
+    expect(resolveLineFold(intent)).toMatchObject({status: 'no-solution', solutions: []});
+    expect(resolveLineFold({...intent, moving: {x: 2, y: 0}}).status).toBe('unverified');
+    expect(resolveLineFold({...intent, moving: {x: .2, y: .1}}).status).toBe('unverified');
+    const boundary = {...intent, pin: {x: 1, y: 1}};
+    const [{line: {a, b}, side}] = resolveLineFold(boundary).solutions;
+    expect(validate(createExperiment().final, {
+      intent: boundary, line: [[a.x, a.y], [b.x, b.y]], side,
+    }).status).toBe('rejected');
   });
 });
