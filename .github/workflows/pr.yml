@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # Supported by the locked Playwright release.
     timeout-minutes: 15
     env:
       ORIGAMI_BASE_PATH: /origami-lab/
