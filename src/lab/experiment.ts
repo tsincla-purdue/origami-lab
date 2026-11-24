@@ -1,4 +1,9 @@
-import { ENGINE_REVISION, NUMERICS, apply, deepFreeze, initialState, reverseFold, type Move, type PaperState, type Validation } from './engine';
+import { EPS, distance, type Vec } from '../../vendor/origamio/src/geometry';
+import {
+  ENGINE_REVISION, NUMERICS, apply, canReverseFold, deepFreeze, initialState, reverseFold,
+  withMaterialMarks, type Move, type PaperState, type Validation,
+} from './engine';
+import { materialIntersections } from './material-points';
 import { DEFAULT_PAPER_STYLE, isPaperStyle, type PaperStyle } from './paper-style';
 
 export type Attempt = {
@@ -12,6 +17,14 @@ export type Attempt = {
 } | {
   readonly operation: 'unfold';
   readonly move: { readonly foldAttempt: number; readonly label: 'Unfold' };
+  readonly validatorVersion?: never;
+} | {
+  readonly operation: 'mark';
+  readonly move: { readonly point: Vec; readonly label: 'Mark point' };
+  readonly validatorVersion?: never;
+} | {
+  readonly operation: 'remove-mark';
+  readonly move: { readonly markAttempt: number; readonly label: 'Remove mark' };
   readonly validatorVersion?: never;
 });
 
@@ -52,10 +65,14 @@ export function recordMove(experiment: Experiment, move: Move): Experiment {
   return appendMove(experiment, move);
 }
 
-function appendMove(experiment: Experiment, move: Move, validatorVersion?: 1): Experiment {
+function requireHistorySpace(experiment: Experiment) {
   if (experiment.attempts.length >= MAX_ATTEMPTS) {
     throw new Error(`An experiment can contain up to ${MAX_ATTEMPTS} attempts.`);
   }
+}
+
+function appendMove(experiment: Experiment, move: Move, validatorVersion?: 1): Experiment {
+  requireHistorySpace(experiment);
   const snapshot = deepFreeze(JSON.parse(JSON.stringify(move)) as Move);
   const result = apply(experiment.final, snapshot, validatorVersion);
   const retainsClearance = validatorVersion === 1 && result.validation.code === 'hinge-cover';
@@ -67,13 +84,23 @@ function appendAttempt(experiment: Experiment, attempt: Attempt): Experiment {
   return deepFreeze({ ...experiment, attempts: [...experiment.attempts, attempt], final: attempt.state });
 }
 
-function unfoldSource(experiment: Experiment): number | undefined {
-  for (let i = experiment.attempts.length - 1; i >= 0; i--) {
-    const attempt = experiment.attempts[i];
+/** Stable, one-based attempt IDs of the currently active folds, earliest first. */
+export function activeFoldAttempts(experiment: Experiment): readonly number[] {
+  const active: number[] = [];
+  for (const [index, attempt] of experiment.attempts.entries()) {
     if (attempt.validation.status !== 'accepted') continue;
-    if (!attempt.operation && attempt.state === experiment.final) return i + 1;
-    break;
+    if (!attempt.operation) active.push(index + 1);
+    else if (attempt.operation === 'unfold' && active.at(-1) === attempt.move.foldAttempt) active.pop();
   }
+  return active;
+}
+
+function unfoldSource(experiment: Experiment) {
+  const foldAttempt = activeFoldAttempts(experiment).at(-1);
+  if (foldAttempt === undefined) return;
+  const source = stateAt(experiment, foldAttempt - 1);
+  const folded = stateAt(experiment, foldAttempt);
+  if (canReverseFold(experiment.final, source, folded)) return {foldAttempt, source, folded};
 }
 
 export function canUnfold(experiment: Experiment): boolean {
@@ -81,13 +108,41 @@ export function canUnfold(experiment: Experiment): boolean {
 }
 
 export function recordUnfold(experiment: Experiment): Experiment {
-  if (experiment.attempts.length >= MAX_ATTEMPTS) throw new Error(`An experiment can contain up to ${MAX_ATTEMPTS} attempts.`);
-  const foldAttempt = unfoldSource(experiment);
-  const state = foldAttempt === undefined ? undefined : reverseFold(experiment.final);
-  if (!state || foldAttempt === undefined) throw new Error('The latest state is not the result of a reversible fold.');
+  requireHistorySpace(experiment);
+  const plan = unfoldSource(experiment);
+  const state = plan && reverseFold(experiment.final, plan.source, plan.folded);
+  if (!state || !plan) throw new Error('The latest state is not the result of a reversible fold.');
   return appendAttempt(experiment, {
-    operation: 'unfold', move: { foldAttempt, label: 'Unfold' }, state,
+    operation: 'unfold', move: { foldAttempt: plan.foldAttempt, label: 'Unfold' }, state,
     validation: { status: 'accepted', code: 'unfold', reason: 'Reversed the last fold and retained its material creases.' },
+  });
+}
+
+export function recordMark(experiment: Experiment, point: Vec): Experiment {
+  requireHistorySpace(experiment);
+  const current = experiment.final;
+  const [exact] = materialIntersections(current, point, EPS);
+  if (!exact) throw new Error('Choose a crease intersection on the original sheet.');
+  const marks = current.marks ?? [];
+  if (marks.some(({point}) => distance(point, exact) <= EPS)) {
+    throw new Error('This material point is already marked.');
+  }
+  const state = withMaterialMarks(current, [...marks, {id: experiment.attempts.length + 1, point: exact}]);
+  return appendAttempt(experiment, {
+    operation: 'mark', move: {point: exact, label: 'Mark point'}, state,
+    validation: {status: 'accepted', code: 'mark-point', reason: 'Marked an exact intersection on the material sheet.'},
+  });
+}
+
+export function recordRemoveMark(experiment: Experiment, markAttempt: number): Experiment {
+  requireHistorySpace(experiment);
+  const current = experiment.final;
+  const marks = current.marks ?? [];
+  const remaining = marks.filter(({id}) => id !== markAttempt);
+  if (remaining.length === marks.length) throw new Error('Choose an existing mark to remove.');
+  return appendAttempt(experiment, {
+    operation: 'remove-mark', move: {markAttempt, label: 'Remove mark'}, state: withMaterialMarks(current, remaining),
+    validation: {status: 'accepted', code: 'remove-mark', reason: 'Removed the selected material mark.'},
   });
 }
 
@@ -146,21 +201,26 @@ export function importExperiment(text: string): Experiment {
       throw new Error(`Invalid move at attempt ${index + 1}.`);
     }
     if (entry.validatorVersion !== undefined &&
-        (entry.validatorVersion !== 1 || entry.validation?.code !== 'hinge-cover')) {
+        (entry.operation !== undefined || entry.validatorVersion !== 1 || entry.validation?.code !== 'hinge-cover')) {
       throw new Error(`Invalid validator version at attempt ${index + 1}.`);
     }
     if (entry.operation === 'unfold') {
-      if (legacy || unfoldSource(replay) !== entry.move.foldAttempt || !canUnfold(replay)) {
+      const plan = !legacy && unfoldSource(replay);
+      if (!plan || plan.foldAttempt !== entry.move.foldAttempt) {
         throw new Error(`Invalid unfold source at attempt ${index + 1}.`);
       }
       replay = recordUnfold(replay);
-      if (!matches(replay.attempts[index].move, entry.move)) throw new Error(`Invalid unfold at attempt ${index + 1}.`);
+    } else if (entry.operation === 'mark' && !legacy) {
+      replay = recordMark(replay, entry.move.point);
+    } else if (entry.operation === 'remove-mark' && !legacy) {
+      replay = recordRemoveMark(replay, entry.move.markAttempt);
     } else {
       if (entry.operation !== undefined) throw new Error(`Unknown operation at attempt ${index + 1}.`);
       replay = appendMove(replay, entry.move, legacy ? 1 : entry.validatorVersion);
     }
     const actual = replay.attempts[index];
-    if (!matches(actual.validation, entry.validation) || !matches(actual.state, entry.state)) {
+    if ((entry.operation && !matches(actual.move, entry.move)) ||
+        !matches(actual.validation, entry.validation) || !matches(actual.state, entry.state)) {
       throw new Error(`Validation or state mismatch at attempt ${index + 1}.`);
     }
   }

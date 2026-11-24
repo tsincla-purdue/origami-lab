@@ -66,6 +66,7 @@
             <svg id="paper" role="img" aria-label="Folded paper geometry" aria-describedby="gesture-reason">
               <g id="paper-scene">
                 <g id="paper-art"></g>
+                <g id="paper-marks" aria-hidden="true"></g>
                 <g id="paper-handles"></g>
                 <g id="paper-preview" aria-hidden="true"></g>
               </g>
@@ -77,6 +78,8 @@
               <p id="gesture-reason"></p>
             </div>
             <label id="solution-control" hidden><span id="solution-label">Landing point</span><select id="solution-choice"></select></label>
+            <label id="mark-layer-control" hidden>Intersection layer<select id="mark-layer"></select></label>
+            <button type="button" id="mark-point" class="button outlined" hidden>Mark point</button>
             <button type="button" id="cancel-fold" class="button quiet" hidden>Cancel</button>
             <button type="button" id="confirm-fold" class="button primary" hidden>Confirm fold</button>
           </div>
@@ -126,7 +129,7 @@
               <button type="button" id="undo" class="button outlined" title="Remove the last attempt">
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5 4 10l5 5m-5-5h10a5 5 0 0 1 0 10"/></svg>Undo
               </button>
-              <button type="button" id="unfold" class="button outlined" title="Reverse the last fold and keep its crease">Unfold</button>
+              <button type="button" id="unfold" class="button outlined" title="Reverse the latest active fold and keep all creases">Unfold</button>
               <button type="button" id="replay" class="button outlined">
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 11 7-11 7Z"/></svg><span id="replay-label">Replay</span>
               </button>

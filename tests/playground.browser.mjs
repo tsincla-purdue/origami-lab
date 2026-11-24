@@ -688,6 +688,125 @@ test('pointer-only hold and drag commits the unique equilateral landing on relea
   await expect(page.locator('.paper-reference')).toHaveAttribute('x1', '0.5');
 });
 
+test('unfolds a snapped fold over an O5 flap and then unfolds the O5 fold', async ({page}) => {
+  const unfold = page.getByRole('button', {name: 'Unfold', exact: true});
+  await dragCorner(page, [1, 0], [0, 0]);
+  await unfold.click();
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  const pin = await screenPoint(page, 0, 0);
+  await page.mouse.move(pin.x, pin.y);
+  await page.mouse.down();
+  await expect(page.locator('.pin-anchor')).toBeVisible({timeout: 2000});
+  await page.mouse.up();
+  await dragCorner(page, [1, 0], [.52, .79]);
+  await expect(page.locator('#history li').last()).toContainText('Point onto line');
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+
+  // Project the upper-left corner across the exposed edge of the O5 flap.
+  await startMouseDrag(page, [0, 1], [.87, .493]);
+  await expect(page.locator('.preview-line.crease-snapped')).toBeVisible();
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  await page.mouse.up();
+  await expect(page.locator('#history li').last()).toContainText('Crease through two points');
+  const folded = await downloadJSON(page, 'Export experiment');
+  expect(folded.final.creases).toHaveLength(3);
+
+  await unfold.click();
+  const reopened = await downloadJSON(page, 'Export experiment');
+  expect(reopened.attempts.at(-1).move.foldAttempt).toBe(4);
+  expect(reopened.final.facets).toEqual(folded.attempts[2].state.facets);
+  expect(reopened.final.creases).toEqual(folded.final.creases);
+  await expect(unfold).toBeEnabled();
+  await unfold.click();
+  const flat = await downloadJSON(page, 'Export experiment');
+  expect(flat.attempts.at(-1).move.foldAttempt).toBe(3);
+  expect(flat.final.facets).toEqual(flat.initial.facets);
+  expect(flat.final.creases).toEqual(folded.final.creases);
+  const actualEndpoints = flat.final.creases.map(({a, b}) => [a, b].sort((p, q) => p.x - q.x || p.y - q.y));
+  const expectedEndpoints = [
+    [[.5, 0], [.5, 1]], [[0, 0], [1, 1 / Math.sqrt(3)]], [[0, 0], [1 / Math.sqrt(3), 1]],
+  ];
+  actualEndpoints.forEach((endpoints, i) => endpoints.forEach(({x, y}, j) => {
+    expect(x).toBeCloseTo(expectedEndpoints[i][j][0], 12);
+    expect(y).toBeCloseTo(expectedEndpoints[i][j][1], 12);
+  }));
+  await expect(unfold).toBeDisabled();
+
+  await page.getByRole('button', {name: 'Crease pattern', exact: true}).click();
+  const pattern = await downloadJSON(page, 'Export FOLD');
+  expect(pattern.edges_assignment.every(assignment => assignment === 'F' || assignment === 'B')).toBe(true);
+  const flatEdges = pattern.edges_vertices.flatMap((edge, i) => pattern.edges_assignment[i] === 'F'
+    ? [edge.map(vertex => pattern.vertices_coords[vertex])] : []);
+  const totalLength = patternEdges => patternEdges.reduce((sum, [a, b]) =>
+    sum + Math.hypot(a[0] - b[0], a[1] - b[1]), 0);
+  expect(totalLength(flatEdges)).toBeCloseTo(totalLength(expectedEndpoints), 12);
+  for (const edge of flatEdges) {
+    expect(expectedEndpoints.some(([[ax, ay], [bx, by]]) => edge.every(([x, y]) =>
+      Math.abs((bx - ax) * (y - ay) - (by - ay) * (x - ax)) < 1e-12))).toBe(true);
+  }
+  await page.getByRole('button', {name: 'Folded', exact: true}).click();
+  await verifyReplayAndUndo(page, flat);
+  const undone = await downloadJSON(page, 'Export experiment');
+  expect(undone.final).toEqual(reopened.final);
+  await expect(unfold).toBeEnabled();
+});
+
+test('an offset tap marks an exact crease crossing and the dot can be pinned, snapped to, and removed', async ({page}) => {
+  const unfold = page.getByRole('button', {name: 'Unfold', exact: true});
+  const mark = page.getByRole('button', {name: 'Mark point', exact: true});
+  const dot = page.locator('#paper-marks .material-mark');
+  await dragCorner(page, [1, 0], [0, 0]);
+  await unfold.click();
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await dragCorner(page, [0, 1], [0, .2]);
+  await unfold.click();
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  const setup = await downloadJSON(page, 'Export experiment');
+  const y = setup.final.creases[1].a.y;
+  expect(y).toBeCloseTo(.6, 2);
+  await expect(dot).toHaveCount(0);
+  await tapCorner(page, [.5, y], 7);
+  await expect(mark).toBeVisible();
+  await mark.click();
+  await expect(dot).toHaveAttribute('cx', '0.5');
+  await expect(dot).toHaveAttribute('cy', String(y));
+  const marked = await downloadJSON(page, 'Export experiment');
+  expect(marked.final.marks).toEqual([{id: 5, point: {x: .5, y}}]);
+
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  const near = await screenPoint(page, .5, y);
+  await page.mouse.move(near.x + 6, near.y + 4);
+  await page.mouse.down();
+  await expect(page.locator('.pin-anchor')).toHaveAttribute('cx', '0.5');
+  await expect(page.locator('.pin-anchor')).toHaveAttribute('cy', String(y));
+  await page.mouse.up();
+  await startMouseDrag(page, [1, 0], [.04, .012]);
+  await expect(page.locator('.constraint-target')).toHaveAttribute('y1', '0');
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  expect(Number(await page.locator('.drag-destination').getAttribute('cx'))).toBeCloseTo(0, 12);
+  await page.mouse.up();
+  await expect(page.locator('#history li').last()).toContainText('Point onto line');
+  await unfold.click();
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await startMouseDrag(page, [1, 1], [.518, y + .01]);
+  await expect(page.locator('.drag-destination')).toHaveAttribute('cx', '0.5');
+  await expect(page.locator('.drag-destination')).toHaveAttribute('cy', String(y));
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  await page.mouse.up();
+  await unfold.click();
+  await expect(dot).toHaveAttribute('data-mark-id', '5');
+  await expect(dot).toHaveAttribute('cy', String(y));
+
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await tapCorner(page, [.5, y], 6);
+  await page.getByRole('button', {name: 'Remove mark', exact: true}).click();
+  await expect(dot).toHaveCount(0);
+  const removed = await downloadJSON(page, 'Export experiment');
+  expect(removed.attempts.at(-1)).toMatchObject({operation: 'remove-mark', move: {markAttempt: 5}});
+  await verifyReplayAndUndo(page, removed);
+  await expect(dot).toHaveAttribute('data-mark-id', '5');
+});
+
 test('holding with a pen pins an interior point and holding it again unpins', async ({page, context}) => {
   const session = await context.newCDPSession(page);
   const point = await screenPoint(page, .31, .37);
@@ -728,6 +847,50 @@ test('paper preference survives reload and presets, and round-trips through expo
 test.describe('touch', () => {
   const { defaultBrowserType, ...touchDevice } = devices['iPhone 13'];
   test.use(touchDevice);
+
+  test('touch marks a genuine crease-edge intersection on the chosen overlapping layer', async ({page, context}) => {
+    const session = await context.newCDPSession(page);
+    const touch = (type, point) => session.send('Input.dispatchTouchEvent', {
+      type, touchPoints: point ? [point] : [],
+    });
+    const fold = async (from, to) => {
+      await touch('touchStart', await screenPoint(page, ...from));
+      await touch('touchMove', await screenPoint(page, ...to));
+      await expect(page.locator('#gesture-status')).toHaveText('accepted');
+      await touch('touchEnd');
+    };
+    const unfold = page.getByRole('button', {name: 'Unfold', exact: true});
+    const mark = page.getByRole('button', {name: 'Mark point', exact: true});
+    const dots = page.locator('#paper-marks .material-mark');
+    await fold([0, 1], [0, 0]);
+    await unfold.tap();
+    await page.locator('#paper').scrollIntoViewIfNeeded();
+    await fold([1, 0], [0, 0]);
+    const tapEdge = async () => {
+      await page.locator('#paper').scrollIntoViewIfNeeded();
+      const p = await screenPoint(page, 0, .5);
+      await page.touchscreen.tap(p.x + 7, p.y + 3);
+    };
+    await tapEdge();
+    const layer = page.getByRole('combobox', {name: 'Intersection layer'});
+    await expect(layer.locator('option')).toHaveText([
+      'Layer 2 · sheet (1.000, 0.500)', 'Layer 1 · sheet (0.000, 0.500)',
+    ]);
+    await layer.selectOption('1');
+    await mark.tap();
+    await expect(dots).toHaveCount(0);
+    await tapEdge();
+    await expect(layer).toHaveValue('0');
+    await mark.tap();
+    await expect(dots).toHaveCount(1);
+    await expect(dots).toHaveAttribute('cx', '0');
+    await unfold.tap();
+    await expect(dots).toHaveCount(2);
+    const file = await downloadJSON(page, 'Export experiment');
+    expect(file.final.marks).toEqual([{id: 4, point: {x: 0, y: .5}}, {id: 5, point: {x: 1, y: .5}}]);
+    const positions = await dots.evaluateAll(nodes => nodes.map(node => [node.getAttribute('cx'), node.getAttribute('cy')]));
+    expect(positions).toEqual([['0', '0.5'], ['1', '0.5']]);
+  });
 
   test('touch drag snaps the crease and commits the exact reflected landing', async ({page, context}) => {
     const session = await context.newCDPSession(page);

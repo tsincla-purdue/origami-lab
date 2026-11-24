@@ -2,8 +2,10 @@ export { apply, validate, propose, initialState, ENGINE_REVISION, NUMERICS } fro
 export type { Move, PaperState, Validation } from './engine';
 export { cornerPackets } from './packets';
 export type { MaterialPacket } from './packets';
-export { createExperiment, recordMove, recordUnfold, canUnfold, undoMove, stateAt, importExperiment, serializeExperiment, setPaperStyle } from './experiment';
+export { activeFoldAttempts, createExperiment, recordMove, recordUnfold, canUnfold, recordMark, recordRemoveMark, undoMove, stateAt, importExperiment, serializeExperiment, setPaperStyle } from './experiment';
 export type { Experiment, Attempt } from './experiment';
+export { materialIntersections, visibleMaterialMarks } from './material-points';
+export type { MaterialMark } from './material-points';
 export { PAPER_STYLES, DEFAULT_PAPER_STYLE, isPaperStyle } from './paper-style';
 export type { PaperStyle } from './paper-style';
 export { PRESETS } from './presets';

@@ -1,11 +1,10 @@
 import {
   EPS, add, apply, distance, invert, signedDistance, sub, type Line, type Side, type Vec,
 } from '../../vendor/origamio/src/geometry';
-import type { PaperState } from '../../vendor/origamio/src/paper';
-import { cornerPackets, solvePointOntoLine, type ConstraintSolution, type MaterialPacket } from '../lab';
+import { cornerPackets, solvePointOntoLine, type ConstraintSolution, type MaterialPacket, type PaperState } from '../lab';
 import { packetHingeLanding } from '../lab/packets';
 import { snapCrease } from './crease-snap';
-import { CORNER_HIT_RADIUS, cornerFold, foldMove, nearestPoint, paperGeometry, paperToScreen } from './geometry';
+import { CORNER_HIT_RADIUS, MARK_HIT_RADIUS, cornerFold, foldMove, nearestPoint, paperGeometry, paperToScreen, type MarkOption } from './geometry';
 
 export type Tool = 'corner' | 'crease';
 export interface Draft {
@@ -80,6 +79,7 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
   let lastTap: number | undefined;
   let wholeStack = false;
   let explicit = false;
+  let offeredMarks: readonly MarkOption[] = [];
   const packetOptions = new Map<Vec, readonly MaterialPacket[]>();
 
   function chooseCorner(corner: Vec | undefined) {
@@ -143,6 +143,7 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
     pin = undefined;
     confirmPin = false;
     issue = undefined;
+    offeredMarks = [];
     callbacks.show();
   }
 
@@ -196,11 +197,15 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
     if (!map) return;
     const start = client(event);
     const touch = event.pointerType === 'touch';
-    const grab = nearestPoint(selection ? [...geometry.corners, selection.corner] : geometry.corners, start, map, CORNER_HIT_RADIUS);
+    const marked = nearestPoint(geometry.marked, start, map, MARK_HIT_RADIUS);
+    const grab = nearestPoint([
+      ...(marked ? [marked] : []), ...geometry.corners, ...(selection ? [selection.corner] : []),
+    ], start, map, CORNER_HIT_RADIUS);
     const anchor = tool === 'corner' ? grab : snap(start, map, event);
     const point = apply(invert(map), start);
     const edgePoint = callbacks.snapping() && !event.altKey ? geometry.snapLine(start, map, touch ? 18 : 13)?.point : undefined;
-    if (tool === 'corner' && !anchor && !edgePoint && !geometry.contains(point)) return;
+    if (tool === 'corner' && !anchor && !edgePoint && !geometry.contains(point) &&
+        !geometry.markOptions(start, map, touch ? 18 : MARK_HIT_RADIUS).length) return;
     const tapOnly = tool === 'corner' && !anchor;
     const selectedPoint = anchor ?? (tool === 'corner' ? snap(start, map, event) ?? edgePoint : undefined) ?? point;
     if (tool === 'corner' && !tapOnly) chooseCorner(selectedPoint);
@@ -228,6 +233,7 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
     if (tool === 'corner') {
       held = undefined;
       issue = undefined;
+      offeredMarks = [];
       const press = drag;
       press.holdTimer = window.setTimeout(() => {
         if (drag !== press || press.moved) return;
@@ -282,6 +288,10 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
         if (wasTap) {
           chooseCorner(anchor);
           cycle(event.timeStamp);
+          const map = transform();
+          if (map && geometry) {
+            offeredMarks = geometry.markOptions(client(event), map, event.pointerType === 'touch' ? 18 : MARK_HIT_RADIUS);
+          }
         }
         callbacks.show(undefined, undefined, issue);
       }
@@ -358,6 +368,8 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
     canConfirm: (draft: Draft) => draft === held,
     packet,
     availableCorners: () => geometry?.corners ?? [],
+    markedPoints: () => tool === 'corner' ? geometry?.marked ?? [] : [],
+    markOptions: () => offeredMarks,
     corners: () => tool === 'corner' ? geometry?.corners ?? [] : [],
     selectCorner(corner: Vec | undefined) {
       release();
