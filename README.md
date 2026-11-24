@@ -60,6 +60,19 @@ compete. Turn off **Snap to points** or hold **Alt** while using a mouse to
 disable both kinds of snapping. Open **Advanced Controls** to preview and record
 the original command-based folds.
 
+Grab an exposed edge or crease away from a corner or marked dot and drag it
+toward another visible line. The dashed brown line identifies the material
+you grabbed, the green line shows the target, and the preview shows the
+angle bisector or halfway crease (O3). Release an accepted unique fold to
+commit it. If two folds are admissible, the preview nearest the pointer is
+selected first. Use **Fold preview** to inspect either before confirming.
+
+Hold a point to pin it, then grab a visible edge or crease and slide along
+that same line toward the other side of the pin. The crease goes through the
+pin at right angles to the line (O4). For example, hold the top midpoint of
+a square, then slide the bottom edge from left to right to fold at the center.
+Grabbing a corner or marked dot still starts a point drag.
+
 Select **Unfold** to reverse the most recent active fold while keeping all
 creases on the paper. After several folds, select it repeatedly to open them
 in reverse order. For example, fold the square vertically in half and select
@@ -69,7 +82,9 @@ Tap near a crossing between creases or where a crease meets a paper edge, then
 choose **Mark point**. When genuine intersections overlap, **Intersection layer**
 lets you choose the sheet location to mark. A dot follows that material and
 appears when it is exposed. You can hold a visible dot to pin it, drag it, or
-use it as a snap target. Tap it and choose **Remove mark** to erase the dot.
+use it as a snap target or one of two crease references. Exposed marks use
+the same grab radius as corners and the same snap tolerances as other points.
+Tap a mark and choose **Remove mark** to erase the dot.
 Both actions are recorded, support **Undo**, and are saved in experiment JSON.
 
 To construct an equilateral triangle on that square, press and hold the
@@ -199,6 +214,23 @@ side used by the drag preview. To submit a solved construction, pass
 `{line: [[a.x, a.y], [b.x, b.y]], side: solution.side}` to `recordMove` or
 `apply`, with the intended material packet if needed. The normal validator
 checks the proposed fold and experiment JSON records its exact axis.
+
+`solveLineOntoLine(source, target)` computes O3 using supporting lines. It
+returns both bisectors for intersecting lines, the midway axis for distinct
+parallel lines, or a diagnostic for coincidence or numerical uncertainty.
+It verifies the reflection of both source endpoints to the paper-coordinate
+epsilon (`1e-9`). `solvePerpendicularThroughPoint(point, line)` computes and
+verifies O4. Nearly parallel O3 directions and O4 orthogonality are checked
+against 64 binary64 epsilons in normalized directions.
+
+Use `resolveLineFold(intent)` to resolve the same finite-segment constraints
+used by dragging. Supply a `source` reference with its `facetId` and projected
+`line`, the grabbed point as `moving`, and either `kind: 'align-lines'` with a
+`target` reference or `kind: 'perpendicular'` with a `pin`. Pass a returned
+solution's resolved `line` and `side` with that `intent` to the normal move API.
+The physical validator still evaluates the selected packet. Replay checks
+that the recorded axis and side resolve from the intent. Older moves without
+line intent remain readable.
 
 `solvePointOntoLine(pin, moving, {a, b}, finite)` implements O5. It intersects
 the target line with the circle centered at the pin with radius equal to the

@@ -2,8 +2,8 @@ import { add, clipPolygon, lineDirection, scale, type Line, type Polygon, type V
 import { currentPolygon, isFlipped } from '../../vendor/origamio/src/paper';
 import { visibleMaterialMarks, type MaterialPacket, type PaperState, type PaperStyle } from '../lab';
 import { facetCreases } from '../lab/crease-references';
-import { CORNER_HIT_RADIUS, MARK_HIT_RADIUS } from './geometry';
-import type { CornerSelection, Draft } from './gestures';
+import { CORNER_HIT_RADIUS, LINE_GRAB_RADIUS } from './geometry';
+import type { ConstraintIssue, CornerSelection, Draft } from './gestures';
 
 type Face = 'front' | 'back';
 type Ink = readonly [paper: string, motif: string];
@@ -85,15 +85,16 @@ const segment = (a: Vec, b: Vec, cls: string) =>
 const circle = (p: Vec, radius: number, cls: string) =>
   `<circle class="${cls}" cx="${p.x}" cy="${p.y}" r="${radius}"/>`;
 
-export function constraintMarkup(pin: Vec | undefined, draft: Draft | undefined, target: Line | undefined, landings: readonly Vec[], unit: number) {
-  if (!pin) return '';
+export function constraintMarkup(pin: Vec | undefined, draft: Draft | undefined, issue: ConstraintIssue | undefined, landings: readonly Vec[], unit: number) {
   const constraint = draft?.constraint;
-  const line = constraint?.target ?? target;
+  const line = constraint?.target ?? issue?.target;
+  const source = draft?.lineIntent?.source.line ?? issue?.source;
   const others = new Set(landings);
   if (draft) others.delete(draft.destination);
   const alternatives = [...others].map(point => circle(point, 6 * unit, 'alternative-landing')).join('');
   return (line ? segment(line.a, line.b, 'constraint-target') : '') +
-    alternatives + circle(pin, 6 * unit, 'pin-anchor');
+    (source ? segment(source.a, source.b, 'constraint-source') : '') +
+    alternatives + (pin ? circle(pin, 6 * unit, 'pin-anchor') : '');
 }
 
 export function cornerHandles(corners: readonly Vec[], unit: number): string {
@@ -102,7 +103,11 @@ export function cornerHandles(corners: readonly Vec[], unit: number): string {
 }
 
 export function markHandles(points: readonly Vec[], unit: number): string {
-  return points.map(point => circle(point, MARK_HIT_RADIUS * unit, 'mark-touch')).join('');
+  return points.map(point => circle(point, CORNER_HIT_RADIUS * unit, 'mark-touch')).join('');
+}
+
+export function lineHandles(lines: readonly Line[], unit: number): string {
+  return lines.map(({a, b}) => `<line class="line-touch" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke-width="${2 * LINE_GRAB_RADIUS * unit}"/>`).join('');
 }
 
 export function markMarkup(state: PaperState, unit: number, unfolded = false): string {

@@ -12,3 +12,5 @@ export { PRESETS } from './presets';
 export { exportFold } from './fold-format';
 export { solveCreaseThroughPoints, solvePointOntoLine } from './constraints';
 export type { ConstraintResult, ConstraintSolution } from './constraints';
+export { solveLineOntoLine, solvePerpendicularThroughPoint, resolveLineFold } from './line-constraints';
+export type { LineFoldIntent, LineReference } from './line-constraints';

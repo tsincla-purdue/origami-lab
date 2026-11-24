@@ -11,7 +11,7 @@ import { MAX_EXPERIMENT_LENGTH } from './lab/experiment';
 import { connectGestures, type ConstraintIssue, type CornerSelection, type Draft, type Tool } from './playground/gestures';
 import { interpretDraft, type Interpretation } from './playground/intent';
 import {
-  constraintMarkup, cornerHandles, faceColor, markHandles, markMarkup, markSelection,
+  constraintMarkup, cornerHandles, faceColor, lineHandles, markHandles, markMarkup, markSelection,
   packetMarkup, paperMarkup, previewMarkup, styleSwatch,
 } from './playground/paper-view';
 
@@ -99,7 +99,7 @@ function pixelUnit() {
 
 function drawHandles() {
   const unit = pixelUnit();
-  get<SVGGElement>('paper-handles').innerHTML =
+  get<SVGGElement>('paper-handles').innerHTML = lineHandles(gestures.grabLines().map(({line}) => line), unit) +
     cornerHandles(gestures.corners(), unit) + markHandles(gestures.markedPoints(), unit);
   get<SVGGElement>('paper-marks').innerHTML = markMarkup(stateAt(experiment, cursor), unit, creaseView);
 }
@@ -125,7 +125,7 @@ function drawOverlay() {
     .map(({draft}) => draft.destination);
   layer.innerHTML = (selection ? packetMarkup(state, selection, guide, unit, option?.move.packet) : '') +
     previewMarkup(state, guide, endpoint, hoverCorner, unit, !selection) +
-    constraintMarkup(gestures.pinned(), option?.draft ?? pending, constraintIssue?.target, landings, unit) +
+    constraintMarkup(gestures.pinned(), option?.draft ?? pending, constraintIssue, landings, unit) +
     markSelection(selectedMark()?.position, unit);
 }
 
@@ -176,7 +176,7 @@ function gestureStatus() {
     pin ? 'Drag a point toward a visible crease or edge.' :
     tool === 'crease' ? 'Draw a crease, then tap the side to move.' :
     gestures.selection() ? 'Drag the selected point or press and hold it to pin it.' :
-    'Drag a corner, tap to select layers, or press and hold a point to pin it.');
+    'Drag a corner or edge, tap to select layers, or press and hold a point to pin it.');
   const reason = get('gesture-reason');
   if (reason.textContent !== message) reason.textContent = message;
   const confirmation = pending && pending.side !== undefined && gestures.canConfirm(pending);
@@ -201,7 +201,8 @@ function gestureStatus() {
     const pointKey = ({x, y}: Vec) => `${x},${y}`;
     const landings = new Set(interpretations.map(({draft}) => pointKey(draft.destination)));
     const hasPacketChoice = landings.size < interpretations.length;
-    get('solution-label').textContent = landings.size === 1 ? 'Moving packet' : hasPacketChoice ? 'Fold preview' : 'Landing point';
+    get('solution-label').textContent = landings.size === 1 ? 'Moving packet'
+      : hasPacketChoice || pending?.lineIntent ? 'Fold preview' : 'Landing point';
     const labels = interpretations.map(({draft, move}) => {
       const {x, y} = draft.destination;
       const location = `(${x.toFixed(3)}, ${y.toFixed(3)})`;
