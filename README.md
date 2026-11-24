@@ -1,5 +1,7 @@
 # Origami Lab
 
+Origami Lab is a shared world for mathematical play: people and small AI agents explore the same paper, whose geometry, layers, and physical constraints do some of the mathematical work. See our [guiding principles](docs/PRINCIPLES.md).
+
 A browser playground and headless TypeScript API for experiments with elementary
 flat folds. Origamio supplies polygon geometry, the folding operation, hinge
 diagnostics, and both SVG views. The lab supplies validation, candidate
