@@ -8,5 +8,5 @@ export { PAPER_STYLES, DEFAULT_PAPER_STYLE, isPaperStyle } from './paper-style';
 export type { PaperStyle } from './paper-style';
 export { PRESETS } from './presets';
 export { exportFold } from './fold-format';
-export { solvePointOntoLine } from './constraints';
+export { solveCreaseThroughPoints, solvePointOntoLine } from './constraints';
 export type { ConstraintResult, ConstraintSolution } from './constraints';

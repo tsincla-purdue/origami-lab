@@ -4,6 +4,7 @@ import {
 import type { PaperState } from '../../vendor/origamio/src/paper';
 import { cornerPackets, solvePointOntoLine, type ConstraintSolution, type MaterialPacket } from '../lab';
 import { packetHingeLanding } from '../lab/packets';
+import { snapCrease } from './crease-snap';
 import { CORNER_HIT_RADIUS, cornerFold, foldMove, nearestPoint, paperGeometry, paperToScreen } from './geometry';
 
 export type Tool = 'corner' | 'crease';
@@ -14,6 +15,7 @@ export interface Draft {
   readonly anchor: Vec;
   readonly destination: Vec;
   readonly snapped: readonly Vec[];
+  readonly creaseSnapped?: boolean;
   readonly packet?: MaterialPacket;
   readonly inferFrom?: readonly MaterialPacket[];
   readonly constraint?: { readonly target: Line; readonly solutions: readonly ConstraintSolution[]; readonly index: number };
@@ -27,7 +29,8 @@ export interface ConstraintIssue {
 
 export function draftMove(draft: Draft) {
   if (draft.side === undefined) return;
-  const label = draft.constraint ? 'Point onto line' : draft.tool === 'corner' ? 'Point drag' : 'Drawn crease';
+  const label = draft.constraint ? 'Point onto line' : draft.creaseSnapped ? 'Crease through two points'
+    : draft.tool === 'corner' ? 'Point drag' : 'Drawn crease';
   const move = foldMove(draft.line, draft.side, label);
   return draft.packet ? { ...move, packet: draft.packet } : move;
 }
@@ -51,6 +54,7 @@ interface Drag {
   moved: boolean;
   tapOnly: boolean;
   hingeLandings: readonly Vec[];
+  creaseSnap?: Line;
   holdTimer?: number;
   longPress?: boolean;
 }
@@ -170,6 +174,15 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
     const marks = [...(drag.anchorSnapped ? [anchor] : []), ...(snapped ? [snapped] : [])];
     if (tool === 'corner') {
       const fold = cornerFold(anchor, destination, map, drag.minimum);
+      if (fold && !snapped && geometry && callbacks.snapping() && !event.altKey) {
+        const radius = event.pointerType === 'touch' ? 13 : event.pointerType === 'pen' ? 10 : 8;
+        const solution = snapCrease(fold.line, anchor, destination, geometry.creasePoints(), map, radius, drag.creaseSnap);
+        if (solution) {
+          drag.creaseSnap = solution.line;
+          return {...solution, tool, anchor, snapped: [], creaseSnapped: true, ...material()};
+        }
+      }
+      drag.creaseSnap = undefined;
       return fold && { ...fold, tool, anchor, destination, snapped: marks, ...material() };
     }
     if (distance(anchor, destination) <= EPS ||

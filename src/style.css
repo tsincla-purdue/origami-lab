@@ -214,6 +214,7 @@ select:disabled { opacity: .65; cursor: default; }
 .corner-dot, .drag-destination { fill: white; }
 .corner-hover, .drag-anchor { fill: #ded4ff; }
 .snap-active { fill: none; stroke: #137458; stroke-width: 2.25; }
+.preview-line.crease-snapped { stroke: #137458; stroke-width: 2.25; }
 .paper-facet {
   stroke: #4e435c;
   stroke-opacity: .64;

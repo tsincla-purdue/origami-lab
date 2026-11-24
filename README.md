@@ -51,8 +51,14 @@ gestures display the reason and leave the paper and history unchanged.
 midpoints, exposed intersections, and the center of the folded silhouette's
 bounds. When the selected packet has one hinge axis, snapping also offers the
 corner's exact landing point across it. A green ring marks the snap target.
-Turn off snapping for arbitrary destinations or hold **Alt** while using a mouse. Open **Advanced
-Controls** to preview and record the original command-based folds.
+When the drag has no landing-point snap and its crease passes close to two
+visible vertices, midpoints, or crease intersections, the crease can lock to the
+exact line through those points. Two green rings and a green crease show that
+the landing has changed to the exact reflection. The crease stays locked
+through small pointer movements and waits for a clear match when nearby lines
+compete. Turn off **Snap to points** or hold **Alt** while using a mouse to
+disable both kinds of snapping. Open **Advanced Controls** to preview and record
+the original command-based folds.
 
 Select **Unfold** to reverse the most recent accepted fold while keeping its
 creases visible on the paper. For example, fold the square vertically in half
@@ -170,6 +176,13 @@ accepted fold while retaining its crease references. An Unfold record points to
 the fold it reverses. The validator reverses a certified path to its previous
 configuration. Further opening of locked or interacting flaps is outside this
 operation.
+
+`solveCreaseThroughPoints(moving, a, b)` implements O1 in folded paper
+coordinates. It returns the same exact line, reflected destination, and moving
+side used by the drag preview. To submit a solved construction, pass
+`{line: [[a.x, a.y], [b.x, b.y]], side: solution.side}` to `recordMove` or
+`apply`, with the intended material packet if needed. The normal validator
+checks the proposed fold and experiment JSON records its exact axis.
 
 `solvePointOntoLine(pin, moving, {a, b}, finite)` implements O5. It intersects
 the target line with the circle centered at the pin with radius equal to the

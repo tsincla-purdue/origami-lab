@@ -4,7 +4,7 @@ import { currentPolygon } from '../vendor/origamio/src/paper';
 import { tears } from '../vendor/origamio/src/rigid';
 import {
   canUnfold, cornerPackets, createExperiment, exportFold, importExperiment, recordMove, recordUnfold,
-  serializeExperiment, solvePointOntoLine, stateAt, undoMove, validate, type Experiment, type Move,
+  serializeExperiment, solveCreaseThroughPoints, solvePointOntoLine, stateAt, undoMove, validate, type Experiment, type Move,
 } from '../src/lab';
 
 const A = {x: 0, y: 0};
@@ -105,5 +105,40 @@ describe('point-to-line geometry', () => {
     expect(solvePointOntoLine(A, A, center).status).toBe('unverified');
     expect(solvePointOntoLine(A, B, {a: A, b: A}).status).toBe('unverified');
     expect(solvePointOntoLine(A, B, outerLine(1 + Number.EPSILON)).status).toBe('unverified');
+  });
+});
+
+describe('crease through two points', () => {
+  it('reflects the moving corner across the exact reference line and records a valid fold', () => {
+    const moving = {x: 0, y: 1};
+    const a = {x: 0, y: .5};
+    const b = {x: 1, y: 1};
+    const result = solveCreaseThroughPoints(moving, a, b);
+    expect(result.status).toBe('solved');
+    expect(result.solutions).toHaveLength(1);
+    const [solution] = result.solutions;
+    expect(solution.line).toEqual({a, b});
+    expect(solution.destination.x).toBeCloseTo(.4, 12);
+    expect(solution.destination.y).toBeCloseTo(.2, 12);
+    expect(solution.side).toBe(sideOf(solution.line, moving));
+    for (const point of [a, b]) {
+      expect(distance(solution.destination, point)).toBeCloseTo(distance(moving, point), 12);
+    }
+
+    const folded = recordMove(createExperiment(), moveOn(solution.line, solution.side));
+    expect(folded.attempts[0].validation.status).toBe('accepted');
+    expect(tears(folded.final)).toBe(0);
+    const flap = folded.final.facets.at(-1)!;
+    expect(mapPoint(flap.transform, moving)).toEqual(solution.destination);
+    expect(flap.z).toBeGreaterThan(folded.final.facets[0].z);
+    checkReplay(folded);
+  });
+
+  it('rejects degenerate geometry and still requires physical validation for a solved line', () => {
+    expect(solveCreaseThroughPoints(B, A, {x: 1e-10, y: 0}).status).toBe('unverified');
+    expect(solveCreaseThroughPoints(B, A, {x: Infinity, y: 0}).status).toBe('unverified');
+    expect(solveCreaseThroughPoints(A, A, B).status).toBe('no-solution');
+    const [solution] = solveCreaseThroughPoints({x: 0, y: 1}, A, B).solutions;
+    expect(validate(createExperiment().final, moveOn(solution.line, solution.side)).code).toBe('no-stationary-paper');
   });
 });
