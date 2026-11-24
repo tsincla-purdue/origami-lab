@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import { devices, expect, test } from '@playwright/test';
 
 async function screenPoint(page, x, y) {
@@ -57,6 +58,13 @@ async function chooseAdvancedCrease(page) {
 }
 
 async function verifyReplayAndUndo(page, experiment) {
+  if (process.env.ORIGAMI_AUDIT_EXPORTS === '1') {
+    const report = spawnSync('python3', ['-B', 'scripts/audit_experiment.py', '-'], {
+      input: JSON.stringify(experiment), encoding: 'utf8',
+    });
+    expect(report.error).toBeUndefined();
+    expect(report.status, report.stdout + report.stderr).toBe(0);
+  }
   const finalFacets = await renderedFacets(page);
   await page.reload();
   await importJSON(page, experiment);

@@ -120,6 +120,8 @@ before leaving the page to keep the history. **Export FOLD** writes the currentl
 displayed snapshot, either a folded form or a crease pattern. The browser runs
 locally without a server-side service or a model.
 
+Audit saved JSON with `python3 scripts/audit_experiment.py saved-experiment.json`. See the [soundness contract](docs/SOUNDNESS.md).
+
 Paper styles are painted in the original sheet coordinates. Each facet carries
 its original polygon and pattern through every reflection. The renderer shows
 the appropriate face and draws upper layers over lower ones. The selected
