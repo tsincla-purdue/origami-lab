@@ -3,12 +3,13 @@ import type { Vec } from '../vendor/origamio/src/geometry';
 import { foldedPoints } from '../vendor/origamio/src/paper';
 import { cameraViewBox, fitCamera, viewBox } from '../vendor/origamio/src/render';
 import {
-  DEFAULT_PAPER_STYLE, PAPER_STYLES, PRESETS, apply, canUnfold, createExperiment, exportFold, importExperiment,
+  DEFAULT_PAPER_STYLE, PAPER_STYLES, PRESETS, canUnfold, createExperiment, exportFold, importExperiment,
   isPaperStyle, propose, recordMove, recordUnfold, serializeExperiment, setPaperStyle, stateAt, undoMove, validate,
 } from './lab';
 import type { Experiment, Move, PaperStyle, Validation } from './lab';
 import { MAX_EXPERIMENT_LENGTH } from './lab/experiment';
-import { connectGestures, draftMove, type ConstraintIssue, type CornerSelection, type Draft, type Tool } from './playground/gestures';
+import { connectGestures, type ConstraintIssue, type CornerSelection, type Draft, type Tool } from './playground/gestures';
+import { interpretDraft, type Interpretation } from './playground/intent';
 import { constraintMarkup, cornerHandles, faceColor, packetMarkup, paperMarkup, previewMarkup, styleSwatch } from './playground/paper-view';
 
 const get = <T extends HTMLElement | SVGElement = HTMLElement>(id: string) => document.getElementById(id) as unknown as T;
@@ -54,8 +55,9 @@ let playback: number | undefined;
 let tool: Tool = 'corner';
 let pending: Draft | undefined;
 let hoverCorner: Vec | undefined;
-let preview: ReturnType<typeof apply> | undefined;
-let alternatives: ReturnType<typeof apply>[] = [];
+let interpretations: Interpretation[] = [];
+let choice = 0;
+const picked = () => interpretations[choice];
 let constraintIssue: ConstraintIssue | undefined;
 let gestureFeedback: Validation | undefined;
 let shownCorners: readonly Vec[] | undefined;
@@ -63,7 +65,7 @@ let shownSelection: CornerSelection | undefined;
 
 const atTip = () => cursor === experiment.attempts.length && playback === undefined;
 const editable = () => atTip() && !creaseView;
-const gestures = connectGestures(paper, { snapping: () => snapToggle.checked, show: showDraft, commit: finishDraft });
+const gestures = connectGestures(paper, { snapping: () => snapToggle.checked, show: showDraft, commit: settleDraft });
 
 function notify(message = '', error = false) {
   notice.hidden = !message;
@@ -100,17 +102,20 @@ function drawOverlay() {
   }
   const move = atTip() && advanced.open && !pending && !hoverCorner && !gestureFeedback && !gestures.pinned()
     ? moves[candidate.selectedIndex] : undefined;
-  const guide = pending ?? (move && {
+  const option = picked();
+  const guide = option?.draft ?? pending ?? (move && {
     line: { a: { x: move.line[0][0], y: move.line[0][1] }, b: { x: move.line[1][0], y: move.line[1][1] } },
     side: move.side,
   });
-  const endpoint = preview?.validation.status === 'accepted' ? preview.state : undefined;
+  const endpoint = option?.result.validation.status === 'accepted' ? option.result.state : undefined;
   const state = stateAt(experiment, cursor);
   const selection = gestures.selection();
   const unit = pixelUnit();
-  layer.innerHTML = (selection ? packetMarkup(state, selection, guide, unit) : '') +
+  const landings = interpretations.filter(({result}) => result.validation.status === 'accepted')
+    .map(({draft}) => draft.destination);
+  layer.innerHTML = (selection ? packetMarkup(state, selection, guide, unit, option?.move.packet) : '') +
     previewMarkup(state, guide, endpoint, hoverCorner, unit, !selection) +
-    constraintMarkup(gestures.pinned(), pending, constraintIssue?.target, unit);
+    constraintMarkup(gestures.pinned(), option?.draft ?? pending, constraintIssue?.target, landings, unit);
 }
 
 function displayPacketControls() {
@@ -131,19 +136,23 @@ function displayPacketControls() {
   countControl.disabled = !editable();
   if (selection !== shownSelection || !countControl.options.length) {
     countControl.replaceChildren(...(selection ? [
+      new Option('Automatic', ''),
       ...selection.packets.map(({facetIds}) => new Option(String(facetIds.length))),
       new Option('Whole stack', 'all'),
-    ] : [new Option('Top at selected point', ''), new Option('Whole stack', 'all')]));
+    ] : [new Option('Automatic', ''), new Option('Whole stack', 'all')]));
   }
-  countControl.value = gestures.wholeStack() ? 'all' : selection ? String(selection.count) : '';
+  countControl.value = gestures.wholeStack() ? 'all' :
+    selection && gestures.hasExplicitPacket() ? String(selection.count) : '';
   const max = selection?.packets.at(-1)?.facetIds.length;
-  const text = gestures.wholeStack() ? 'Whole stack' : selection ? `${selection.count}/${max} layers` : '';
+  const inferred = picked()?.draft.inferFrom && picked()?.move.packet?.facetIds.length;
+  const text = inferred && inferred !== selection?.count ? `${inferred} connected facets` :
+    gestures.wholeStack() ? 'Whole stack' : selection ? `${selection.count}/${max} layers` : '';
   const status = get('packet-status');
   if (status.textContent !== text) status.textContent = text;
 }
 
 function gestureStatus() {
-  const verdict = preview?.validation ?? gestureFeedback;
+  const verdict = picked()?.result.validation ?? gestureFeedback;
   const status = get('gesture-status');
   const text = verdict?.status ?? constraintIssue?.status ?? '';
   status.hidden = !text;
@@ -154,39 +163,48 @@ function gestureStatus() {
     !atTip() ? 'Return to the last history step to continue folding.' :
     pending?.tool === 'crease' ? 'Tap the side of the line you want to move.' :
     pin ? 'Drag a point toward a visible crease or edge.' :
-    tool === 'corner' ? 'Drag a corner, or tap a point to select it.' : 'Draw a crease, then tap the side to move.');
+    tool === 'crease' ? 'Draw a crease, then tap the side to move.' :
+    gestures.selection() ? 'Drag the selected point or press and hold it to pin it.' :
+    'Drag a corner, tap to select layers, or press and hold a point to pin it.');
   const reason = get('gesture-reason');
   if (reason.textContent !== message) reason.textContent = message;
   const confirmation = pending && pending.side !== undefined && gestures.canConfirm(pending);
   confirmFold.hidden = !confirmation;
-  confirmFold.disabled = preview?.validation.status !== 'accepted';
+  confirmFold.disabled = picked()?.result.validation.status !== 'accepted';
   cancelFold.hidden = !pending && !pin;
   pinButton.disabled = !editable() || tool !== 'corner' || (!pin && !gestures.selection());
   pinButton.setAttribute('aria-pressed', String(Boolean(pin)));
   pinButton.textContent = pin ? 'Unpin point' : 'Pin point';
-  get('solution-control').hidden = !confirmation || alternatives.length < 2;
-  if (confirmation && alternatives.length > 1) {
-    const labels = pending?.constraint?.solutions.map(({destination}, index) =>
-      `(${destination.x.toFixed(3)}, ${destination.y.toFixed(3)}) · ${alternatives[index].validation.status}`) ?? [];
+  get('solution-control').hidden = !confirmation || interpretations.length < 2;
+  if (confirmation && interpretations.length > 1) {
+    const pointKey = ({x, y}: Vec) => `${x},${y}`;
+    const landings = new Set(interpretations.map(({draft}) => pointKey(draft.destination)));
+    const hasPacketChoice = landings.size < interpretations.length;
+    get('solution-label').textContent = landings.size === 1 ? 'Moving packet' : hasPacketChoice ? 'Fold preview' : 'Landing point';
+    const labels = interpretations.map(({draft, move}) => {
+      const {x, y} = draft.destination;
+      const location = `(${x.toFixed(3)}, ${y.toFixed(3)})`;
+      const material = `${move.packet?.facetIds.length ?? experiment.final.facets.length} connected facets`;
+      return landings.size === 1 ? material : hasPacketChoice ? `${location} · ${material}` : location;
+    });
     if (labels.join() !== [...solutionChoice.options].map(option => option.text).join()) {
       solutionChoice.replaceChildren(...labels.map((label, index) => new Option(label, String(index))));
     }
-    solutionChoice.value = String(pending?.constraint?.index ?? 0);
+    solutionChoice.value = String(choice);
   }
 }
 
 function showDraft(draft?: Draft, hover?: Vec, issue?: ConstraintIssue) {
+  if (draft !== pending) {
+    interpretations = draft && editable() ? interpretDraft(experiment.final, draft) : [];
+    choice = 0;
+  }
   pending = draft;
   hoverCorner = hover;
   constraintIssue = issue;
   const selection = gestures.selection();
   const selectionChanged = selection !== shownSelection;
   if (draft || issue || selectionChanged) gestureFeedback = undefined;
-  const move = draft && draftMove(draft);
-  alternatives = draft?.constraint && editable() ? draft.constraint.solutions.map(solution =>
-    apply(experiment.final, draftMove({...draft, ...solution}))) : [];
-  preview = draft?.constraint ? alternatives[draft.constraint.index] :
-    move && editable() ? apply(experiment.final, move) : undefined;
   drawOverlay();
   gestureStatus();
   displayPacketControls();
@@ -199,13 +217,18 @@ function clearGesture() {
   gestures.cancel();
 }
 
-function finishDraft(draft: Draft) {
-  const move = draftMove(draft);
-  if (!move || !editable()) return;
-  const verdict = validate(experiment.final, move);
-  if (verdict.status === 'accepted') {
-    commitMove(move);
-  } else {
+function finishDraft() {
+  const option = picked();
+  if (editable() && pending && gestures.canConfirm(pending) && option?.result.validation.status === 'accepted') {
+    commitMove(option.move);
+  }
+}
+
+function settleDraft(draft: Draft) {
+  const verdict = picked()?.result.validation;
+  if (verdict?.status === 'accepted') {
+    if (interpretations.length === 1 && !(draft.constraint && gestures.pinNeedsConfirmation())) finishDraft();
+  } else if (!draft.constraint) {
     gestureFeedback = verdict;
     gestures.cancel();
   }
@@ -410,7 +433,14 @@ countControl.addEventListener('change', () => {
   gestures.selectCount(value === 'all' ? 'all' : value ? Number(value) : undefined);
 });
 pinButton.addEventListener('click', () => gestures.togglePin());
-solutionChoice.addEventListener('change', () => gestures.selectSolution(Number(solutionChoice.value)));
+solutionChoice.addEventListener('change', () => {
+  const next = Number(solutionChoice.value);
+  if (!pending || !gestures.canConfirm(pending) || !interpretations[next]) return;
+  choice = next;
+  drawOverlay();
+  gestureStatus();
+  displayPacketControls();
+});
 for (const mode of ['corner', 'crease'] as const) {
   get(`${mode}-tool`).addEventListener('click', () => {
     tool = mode;
@@ -418,7 +448,7 @@ for (const mode of ['corner', 'crease'] as const) {
     displayDrawing();
   });
 }
-confirmFold.addEventListener('click', () => { if (pending) finishDraft(pending); });
+confirmFold.addEventListener('click', finishDraft);
 cancelFold.addEventListener('click', clearGesture);
 document.addEventListener('keydown', event => { if (event.key === 'Escape') clearGesture(); });
 get('crease-view').addEventListener('click', () => { creaseView = true; clearGesture(); displayDrawing(); });
