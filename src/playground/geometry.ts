@@ -1,13 +1,15 @@
 import {
-  EPS, add, apply, bounds, compose, cross, distance, dot, length, lerp, orientCCW, perpendicularBisector,
+  EPS, add, apply, bounds, compose, cross, distance, dot, invert, length, lerp, orientCCW, perpendicularBisector,
   scale, sideOf, sub, type Line, type Mat, type Polygon, type Side, type Vec,
 } from '../../vendor/origamio/src/geometry';
-import { currentPolygon, type PaperState } from '../../vendor/origamio/src/paper';
+import { currentPolygon } from '../../vendor/origamio/src/paper';
 import { snapTargets } from '../../vendor/origamio/src/snap';
-import type { Move } from '../lab';
+import type { Move, PaperState } from '../lab';
 import { facetCreases } from '../lab/crease-references';
+import { materialIntersections, segmentIntersection, visibleMaterialMarks } from '../lab/material-points';
 
 export const CORNER_HIT_RADIUS = 22;
+export const MARK_HIT_RADIUS = 15;
 
 /** Include the paper's y-up to SVG y-down conversion in the screen transform. */
 export function paperToScreen(svgToScreen: Mat, size: number): Mat {
@@ -51,22 +53,19 @@ function location(poly: Polygon, point: Vec): 'edge' | 'inside' | undefined {
   return onEdge ? 'edge' : 'inside';
 }
 
-function segmentIntersection(first: Line, second: Line): Vec | undefined {
-  const ab = sub(first.b, first.a);
-  const cd = sub(second.b, second.a);
-  const offset = sub(second.a, first.a);
-  const determinant = cross(ab, cd);
-  if (Math.abs(determinant) <= EPS * length(ab) * length(cd)) return;
-  const t = cross(offset, cd) / determinant;
-  const u = cross(offset, ab) / determinant;
-  if (t >= 0 && t <= 1 && u >= 0 && u <= 1) return lerp(first.a, first.b, t);
+export interface MarkOption {
+  readonly point: Vec;
+  readonly position: Vec;
+  readonly rank: number;
+  readonly markId?: number;
 }
 
 /** Stack order decides which projected corner can be picked at a shared screen position. */
 export function paperGeometry(state: PaperState) {
   const faces = [...state.facets].sort((a, b) => b.z - a.z).map(facet => ({
-    poly: orientCCW(currentPolygon(facet)), creases: facetCreases(state, facet),
+    facet, poly: orientCCW(currentPolygon(facet)), creases: facetCreases(state, facet),
   }));
+  const marked = visibleMaterialMarks(state).map(({position}) => position);
   const corners: Vec[] = [];
   for (const [index, {poly}] of faces.entries()) {
     const above = faces.slice(0, index);
@@ -91,14 +90,32 @@ export function paperGeometry(state: PaperState) {
   let references: Vec[] | undefined;
   return {
     corners,
+    marked,
     contains: (point: Vec) => hit(point) !== undefined,
+    markOptions(screen: Vec, transform: Mat, radius: number): MarkOption[] {
+      const world = apply(invert(transform), screen);
+      const reach = radius / Math.hypot(transform.a, transform.b);
+      const options: (MarkOption & {visible: boolean})[] = [];
+      for (const [layer, {facet}] of faces.entries()) {
+        const local = apply(invert(facet.transform), world);
+        for (const point of materialIntersections(state, local, reach)) {
+          if (!location(facet.poly, point) || options.some(option => distance(option.point, point) <= EPS)) continue;
+          const position = apply(facet.transform, point);
+          const markId = state.marks?.find(mark => distance(mark.point, point) <= EPS)?.id;
+          const visible = !faces.slice(0, layer).some(({poly}) => location(poly, position));
+          options.push({point, position, rank: faces.length - layer, markId, visible});
+        }
+      }
+      const closest = nearestPoint(options.filter(option => option.visible).map(({position}) => position), screen, transform, radius);
+      return closest ? options.filter(option => distance(option.position, closest) <= EPS) : [];
+    },
     snapPoints() {
       const { minX, maxX, minY, maxY } = bounds(faces.flatMap(({poly}) => poly));
       const center = scale(add({ x: minX, y: minY }, { x: maxX, y: maxY }), 0.5);
       const targets = snapTargets(state).points.filter(({kind, point}) => kind !== 'vertex' && hit(point) === 'edge');
-      const marks = faces.flatMap(({creases}, layer) => creases.flatMap(({a, b}) =>
+      const endpoints = faces.flatMap(({creases}, layer) => creases.flatMap(({a, b}) =>
         [a, b, scale(add(a, b), .5)].filter(point => visibleAt(point, layer))));
-      return [...corners, ...targets.map(({point}) => point), ...marks, center];
+      return [...marked, ...corners, ...targets.map(({point}) => point), ...endpoints, center];
     },
     creasePoints() {
       if (references) return references;
@@ -106,6 +123,7 @@ export function paperGeometry(state: PaperState) {
       const include = (point: Vec) => {
         if (!points.some(existing => distance(existing, point) <= EPS)) points.push(point);
       };
+      for (const point of marked) include(point);
       for (const {line: {a, b}, layer} of lines) {
         for (const point of [a, b, lerp(a, b, .5)]) {
           if (visibleAt(point, layer)) include(point);

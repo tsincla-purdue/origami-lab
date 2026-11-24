@@ -60,9 +60,17 @@ compete. Turn off **Snap to points** or hold **Alt** while using a mouse to
 disable both kinds of snapping. Open **Advanced Controls** to preview and record
 the original command-based folds.
 
-Select **Unfold** to reverse the most recent accepted fold while keeping its
-creases visible on the paper. For example, fold the square vertically in half
-and select **Unfold** to return to a flat square with a center crease.
+Select **Unfold** to reverse the most recent active fold while keeping all
+creases on the paper. After several folds, select it repeatedly to open them
+in reverse order. For example, fold the square vertically in half and select
+**Unfold** to return to a flat square with a center crease.
+
+Tap near a crossing between creases or where a crease meets a paper edge, then
+choose **Mark point**. When genuine intersections overlap, **Intersection layer**
+lets you choose the sheet location to mark. A dot follows that material and
+appears when it is exposed. You can hold a visible dot to pin it, drag it, or
+use it as a snap target. Tap it and choose **Remove mark** to erase the dot.
+Both actions are recorded, support **Undo**, and are saved in experiment JSON.
 
 To construct an equilateral triangle on that square, press and hold the
 lower-left corner until the pin appears. Release it, then drag the lower-right
@@ -171,11 +179,19 @@ The IDs refer to the material facets in the state immediately before the move.
 They comprise the two midlines and two opposite-corner bisectors, with both
 sides for each axis. Check each candidate before applying it.
 
-Use `canUnfold(experiment)` and `recordUnfold(experiment)` to reverse the latest
-accepted fold while retaining its crease references. An Unfold record points to
-the fold it reverses. The validator reverses a certified path to its previous
-configuration. Further opening of locked or interacting flaps is outside this
-operation.
+Use `activeFoldAttempts(experiment)` to inspect the one-based attempt IDs of
+active folds. `canUnfold(experiment)` and `recordUnfold(experiment)` allow the
+latest active fold to be reversed when the current geometry matches its
+certified endpoint. Each Unfold record names that attempt and retains all
+material creases. Arbitrary opening of locked or interacting flaps is outside
+the model.
+
+`materialIntersections(state, near, radius)` returns exact finite intersections
+in original sheet coordinates. Use `recordMark(experiment, point)` to mark one
+and `recordRemoveMark(experiment, markAttempt)` to remove it by its original
+mark attempt ID. The marks stay in material coordinates in experiment JSON.
+`visibleMaterialMarks(state)` gives their current exposed positions. FOLD export
+continues to describe the sheet geometry and its crease pattern.
 
 `solveCreaseThroughPoints(moving, a, b)` implements O1 in folded paper
 coordinates. It returns the same exact line, reflected destination, and moving

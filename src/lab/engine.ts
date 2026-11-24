@@ -4,14 +4,15 @@ import {
   type Line, type Polygon, type Vec,
 } from '../../vendor/origamio/src/geometry';
 import {
-  createPaper, currentPolygon, fold, type FoldResult, type PaperState,
+  createPaper, currentPolygon, fold, type FoldResult, type PaperState as OrigamioState,
 } from '../../vendor/origamio/src/paper';
 import { hinges, tears } from '../../vendor/origamio/src/rigid';
 import { parseStep, type FoldStep, type StepJson } from '../../vendor/origamio/src/sequence';
 import { connected, foldPacket, type MaterialPacket } from './packets';
+import type { MaterialMark } from './material-points';
 
 export type Move = StepJson & { readonly packet?: MaterialPacket };
-export type { PaperState };
+export type PaperState = OrigamioState & { readonly marks?: readonly MaterialMark[] };
 export type Validation = {
   readonly status: 'accepted' | 'rejected' | 'unverified';
   readonly code: string;
@@ -335,15 +336,31 @@ export function validate(state: PaperState, move: unknown): Validation {
 export function apply(state: PaperState, move: unknown, validatorVersion: 1 | 2 = NUMERICS.validatorVersion): {state: PaperState; validation: Validation} {
   const { validation, trial } = evaluate(state, move, validatorVersion === 1);
   if (!trial) return { state, validation };
-  const folded = verified(trial.state);
+  const folded = verified(state.marks ? {...trial.state, marks: state.marks} : trial.state);
   foldSources.set(folded, state);
   return { state: folded, validation };
 }
 
-/** Reverse the certified path of one fold, restoring its input mesh and retaining the material creases. */
-export function reverseFold(state: PaperState): PaperState | undefined {
-  const source = foldSources.get(state);
-  if (source) return verified({ ...source, creases: state.creases, nextId: state.nextId });
+/** A later fold must have been reversed before the earlier path is safe to traverse. */
+export function canReverseFold(state: PaperState, source: PaperState, folded: PaperState): boolean {
+  // Only certified folds change the immutable mesh. Marks and retained creases do not affect the path.
+  return verifiedStates.has(state) && foldSources.get(folded) === source &&
+    state.facets === folded.facets && state.foldCount === folded.foldCount;
+}
+
+/** Keep the material annotations and ID allocation from the current state. */
+export function reverseFold(state: PaperState, source: PaperState, folded: PaperState): PaperState | undefined {
+  if (!canReverseFold(state, source, folded)) return;
+  const {marks: _marks, ...base} = source;
+  return verified({
+    ...base, creases: state.creases, nextId: state.nextId, ...(state.marks && {marks: state.marks}),
+  });
+}
+
+export function withMaterialMarks(state: PaperState, marks: readonly MaterialMark[]): PaperState {
+  if (!verifiedStates.has(state)) throw new Error('Reconstruct the state by replaying a lab experiment first.');
+  const {marks: _marks, ...base} = state;
+  return verified(marks.length ? { ...base, marks } : base);
 }
 
 /** Finite candidate set in the current folded bounds, in stable order. */

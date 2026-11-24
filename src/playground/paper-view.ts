@@ -1,8 +1,8 @@
 import { add, clipPolygon, lineDirection, scale, type Line, type Polygon, type Vec } from '../../vendor/origamio/src/geometry';
-import { currentPolygon, isFlipped, type PaperState } from '../../vendor/origamio/src/paper';
-import type { MaterialPacket, PaperStyle } from '../lab';
+import { currentPolygon, isFlipped } from '../../vendor/origamio/src/paper';
+import { visibleMaterialMarks, type MaterialPacket, type PaperState, type PaperStyle } from '../lab';
 import { facetCreases } from '../lab/crease-references';
-import { CORNER_HIT_RADIUS } from './geometry';
+import { CORNER_HIT_RADIUS, MARK_HIT_RADIUS } from './geometry';
 import type { CornerSelection, Draft } from './gestures';
 
 type Face = 'front' | 'back';
@@ -101,6 +101,20 @@ export function cornerHandles(corners: readonly Vec[], unit: number): string {
     circle(point, CORNER_HIT_RADIUS * unit, 'corner-touch') + circle(point, 3.75 * unit, 'corner-dot')).join('');
 }
 
+export function markHandles(points: readonly Vec[], unit: number): string {
+  return points.map(point => circle(point, MARK_HIT_RADIUS * unit, 'mark-touch')).join('');
+}
+
+export function markMarkup(state: PaperState, unit: number, unfolded = false): string {
+  const marks = unfolded ? state.marks?.map(mark => ({...mark, position: mark.point})) : visibleMaterialMarks(state);
+  return (marks ?? []).map(({id, position}) =>
+    `<circle class="material-mark" data-mark-id="${id}" cx="${position.x}" cy="${position.y}" r="${3.5 * unit}"/>`).join('');
+}
+
+export function markSelection(point: Vec | undefined, unit: number): string {
+  return point ? circle(point, 8 * unit, 'intersection-selection') : '';
+}
+
 export type FoldGuide = Pick<Draft, 'line' | 'side'> & Partial<Pick<Draft, 'anchor' | 'destination' | 'snapped' | 'creaseSnapped'>>;
 
 export function packetMarkup(state: PaperState, selection: CornerSelection, draft: FoldGuide | undefined, unit: number, inferred?: MaterialPacket): string {
@@ -124,7 +138,7 @@ export function previewMarkup(state: PaperState, draft: FoldGuide | undefined, r
   if (!draft) return hover ? circle(hover, 7 * unit, 'corner-hover') : '';
   const {line, side, anchor, destination, snapped, creaseSnapped} = draft;
   const parts: string[] = [];
-  if (result) parts.push(`<g class="fold-endpoint">${foldedFacets(result)}</g>`);
+  if (result) parts.push(`<g class="fold-endpoint">${foldedFacets(result)}${markMarkup(result, unit)}</g>`);
   if (line) {
     const span = state.size * 16;
     const direction = scale(lineDirection(line), span);

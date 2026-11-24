@@ -4,13 +4,16 @@ import { foldedPoints } from '../vendor/origamio/src/paper';
 import { cameraViewBox, fitCamera, viewBox } from '../vendor/origamio/src/render';
 import {
   DEFAULT_PAPER_STYLE, PAPER_STYLES, PRESETS, canUnfold, createExperiment, exportFold, importExperiment,
-  isPaperStyle, propose, recordMove, recordUnfold, serializeExperiment, setPaperStyle, stateAt, undoMove, validate,
+  isPaperStyle, propose, recordMark, recordMove, recordRemoveMark, recordUnfold, serializeExperiment, setPaperStyle, stateAt, undoMove, validate,
 } from './lab';
 import type { Experiment, Move, PaperStyle, Validation } from './lab';
 import { MAX_EXPERIMENT_LENGTH } from './lab/experiment';
 import { connectGestures, type ConstraintIssue, type CornerSelection, type Draft, type Tool } from './playground/gestures';
 import { interpretDraft, type Interpretation } from './playground/intent';
-import { constraintMarkup, cornerHandles, faceColor, packetMarkup, paperMarkup, previewMarkup, styleSwatch } from './playground/paper-view';
+import {
+  constraintMarkup, cornerHandles, faceColor, markHandles, markMarkup, markSelection,
+  packetMarkup, paperMarkup, previewMarkup, styleSwatch,
+} from './playground/paper-view';
 
 const get = <T extends HTMLElement | SVGElement = HTMLElement>(id: string) => document.getElementById(id) as unknown as T;
 const candidate = get<HTMLSelectElement>('candidate');
@@ -32,6 +35,8 @@ const cornerControl = get<HTMLSelectElement>('packet-corner');
 const countControl = get<HTMLSelectElement>('packet-count');
 const pinButton = get<HTMLButtonElement>('pin-point');
 const solutionChoice = get<HTMLSelectElement>('solution-choice');
+const markButton = get<HTMLButtonElement>('mark-point');
+const markLayer = get<HTMLSelectElement>('mark-layer');
 
 const styleKey = 'origami-lab.paper-style';
 function savedStyle(): PaperStyle {
@@ -66,6 +71,8 @@ let shownSelection: CornerSelection | undefined;
 const atTip = () => cursor === experiment.attempts.length && playback === undefined;
 const editable = () => atTip() && !creaseView;
 const gestures = connectGestures(paper, { snapping: () => snapToggle.checked, show: showDraft, commit: settleDraft });
+let shownMarkOptions: ReturnType<typeof gestures.markOptions> | undefined;
+const selectedMark = () => gestures.markOptions()[markLayer.selectedIndex];
 
 function notify(message = '', error = false) {
   notice.hidden = !message;
@@ -91,7 +98,10 @@ function pixelUnit() {
 }
 
 function drawHandles() {
-  get<SVGGElement>('paper-handles').innerHTML = cornerHandles(gestures.corners(), pixelUnit());
+  const unit = pixelUnit();
+  get<SVGGElement>('paper-handles').innerHTML =
+    cornerHandles(gestures.corners(), unit) + markHandles(gestures.markedPoints(), unit);
+  get<SVGGElement>('paper-marks').innerHTML = markMarkup(stateAt(experiment, cursor), unit, creaseView);
 }
 
 function drawOverlay() {
@@ -115,7 +125,8 @@ function drawOverlay() {
     .map(({draft}) => draft.destination);
   layer.innerHTML = (selection ? packetMarkup(state, selection, guide, unit, option?.move.packet) : '') +
     previewMarkup(state, guide, endpoint, hoverCorner, unit, !selection) +
-    constraintMarkup(gestures.pinned(), option?.draft ?? pending, constraintIssue?.target, landings, unit);
+    constraintMarkup(gestures.pinned(), option?.draft ?? pending, constraintIssue?.target, landings, unit) +
+    markSelection(selectedMark()?.position, unit);
 }
 
 function displayPacketControls() {
@@ -175,6 +186,16 @@ function gestureStatus() {
   pinButton.disabled = !editable() || tool !== 'corner' || (!pin && !gestures.selection());
   pinButton.setAttribute('aria-pressed', String(Boolean(pin)));
   pinButton.textContent = pin ? 'Unpin point' : 'Pin point';
+  const markOptions = gestures.markOptions();
+  if (shownMarkOptions !== markOptions) {
+    markLayer.replaceChildren(...markOptions.map(({rank, point: {x, y}}, index) =>
+      new Option(`Layer ${rank} · sheet (${x.toFixed(3)}, ${y.toFixed(3)})`, String(index))));
+    shownMarkOptions = markOptions;
+  }
+  const mark = selectedMark();
+  get('mark-layer-control').hidden = !editable() || markOptions.length < 2;
+  markButton.hidden = !editable() || !mark;
+  markButton.textContent = mark?.markId === undefined ? 'Mark point' : 'Remove mark';
   get('solution-control').hidden = !confirmation || interpretations.length < 2;
   if (confirmation && interpretations.length > 1) {
     const pointKey = ({x, y}: Vec) => `${x},${y}`;
@@ -205,8 +226,8 @@ function showDraft(draft?: Draft, hover?: Vec, issue?: ConstraintIssue) {
   const selection = gestures.selection();
   const selectionChanged = selection !== shownSelection;
   if (draft || issue || selectionChanged) gestureFeedback = undefined;
-  drawOverlay();
   gestureStatus();
+  drawOverlay();
   displayPacketControls();
   shownSelection = selection;
   if (selectionChanged && advanced.open) renderCandidate();
@@ -256,8 +277,8 @@ function displayDrawing() {
   get<SVGGElement>('paper-art').innerHTML = paperMarkup(state, style, creaseView);
   gestures.setContext(editable() ? state : undefined, tool);
   drawHandles();
-  drawOverlay();
   gestureStatus();
+  drawOverlay();
   displayPacketControls();
   const legend = get('legend');
   legend.style.setProperty('--paper-front', faceColor(style, 'front'));
@@ -433,6 +454,22 @@ countControl.addEventListener('change', () => {
   gestures.selectCount(value === 'all' ? 'all' : value ? Number(value) : undefined);
 });
 pinButton.addEventListener('click', () => gestures.togglePin());
+markLayer.addEventListener('change', () => {
+  gestureStatus();
+  drawOverlay();
+});
+markButton.addEventListener('click', () => {
+  const mark = selectedMark();
+  if (!editable() || !mark) return;
+  try {
+    const next = mark.markId === undefined
+      ? recordMark(experiment, mark.point)
+      : recordRemoveMark(experiment, mark.markId);
+    replaceExperiment(next, next.attempts.length);
+  } catch (error) {
+    notify((error as Error).message, true);
+  }
+});
 solutionChoice.addEventListener('change', () => {
   const next = Number(solutionChoice.value);
   if (!pending || !gestures.canConfirm(pending) || !interpretations[next]) return;
