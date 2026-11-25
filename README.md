@@ -54,11 +54,10 @@ corner's exact landing point across it. A green ring marks the snap target.
 When the drag has no landing-point snap and its crease passes close to two
 visible vertices, midpoints, or crease intersections, the crease can lock to the
 exact line through those points. Two green rings and a green crease show that
-the landing has changed to the exact reflection. The crease stays locked
-through small pointer movements and waits for a clear match when nearby lines
-compete. Turn off **Snap to points** or hold **Alt** while using a mouse to
-disable both kinds of snapping. Open **Advanced Controls** to preview and record
-the original command-based folds.
+the landing has changed to the exact reflection. The acquired target stays
+locked through small pointer movements. Pull away to release it, or choose
+from **Snap target** when several close candidates remain on release. Turn
+off **Snap to points** or hold **Alt** while using a mouse to pause snapping.
 
 Grab an exposed edge or crease away from a corner or marked dot and drag it
 toward another visible line. The dashed brown line identifies the material
@@ -66,6 +65,9 @@ you grabbed, the green line shows the target, and the preview shows the
 angle bisector or halfway crease (O3). Release an accepted unique fold to
 commit it. If two folds are admissible, the preview nearest the pointer is
 selected first. Use **Fold preview** to inspect either before confirming.
+Dragging the grabbed edge point to a marked dot brings that exact point onto
+the dot. In **Advanced Controls → Draw crease**, snapping to one mark keeps
+the drawn direction, and snapping to two marks uses their exact line.
 
 Hold a point to pin it, then grab a visible edge or crease and slide along
 that same line toward the other side of the pin. The crease goes through the
@@ -86,8 +88,9 @@ creases on the paper. After several folds, select it repeatedly to open them
 in reverse order, even after a turnover. For example, fold the square vertically in half and select
 **Unfold** to return to a flat square with a center crease.
 
-Tap near a crossing between creases or where a crease meets a paper edge, then
-choose **Mark point**. When genuine intersections overlap, **Intersection layer**
+Hover or press near a crossing between creases or where a crease meets a
+paper edge to preview the exact intersection, its references, and its layer.
+Tap, then choose **Mark point**. When genuine intersections compete, **Intersection layer**
 lets you choose the sheet location to mark. A dot follows that material and
 appears when it is exposed. You can hold a visible dot to pin it, drag it, or
 use it as a snap target or one of two crease references. Exposed marks use

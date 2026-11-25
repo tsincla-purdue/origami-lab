@@ -244,6 +244,13 @@ select:disabled { opacity: .65; cursor: default; }
 .constraint-target { stroke: #137458; stroke-width: 2.4; }
 .constraint-source { stroke: #874519; stroke-width: 2.4; stroke-dasharray: 5 4; }
 .perpendicular-marker { fill: none; stroke: var(--accent-dark); stroke-width: 1.8; vector-effect: non-scaling-stroke; }
+.intersection-ghost, .intersection-reference {
+  fill: none;
+  stroke: var(--accent-dark);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
 .pin-anchor { fill: #f5c450; stroke: #714b0f; stroke-width: 1.6; }
 .alternative-landing { fill: #fff; stroke: #137458; stroke-width: 1.4; stroke-dasharray: 2 2; }
 .preview-line {

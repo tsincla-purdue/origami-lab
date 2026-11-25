@@ -1,13 +1,14 @@
 import {
-  EPS, add, apply, bounds, compose, cross, distance, dot, invert, length, lerp, orientCCW, perpendicularBisector,
+  EPS, add, apply, applyToLine, bounds, compose, cross, distance, dot, invert, length, lerp, orientCCW, perpendicularBisector,
   scale, sideOf, sub, type Line, type Mat, type Polygon, type Side, type Vec,
 } from '../../vendor/origamio/src/geometry';
 import { currentPolygon } from '../../vendor/origamio/src/paper';
 import { snapTargets } from '../../vendor/origamio/src/snap';
 import { paperInView, type LineReference, type Move, type PaperState } from '../lab';
 import { clipCrease, facetCreases } from '../lab/crease-references';
-import { materialIntersections, segmentIntersection, visibleMaterialMarks } from '../lab/material-points';
+import { materialIntersectionDetails, segmentIntersection, visibleMaterialMarks } from '../lab/material-points';
 import { containsLinePoint } from '../lab/line-constraints';
+import { lineKey, pointKey, releaseRadius, selectSnap } from './snap-selection';
 
 export const CORNER_HIT_RADIUS = 22;
 export const MARK_HIT_RADIUS = 15;
@@ -107,6 +108,8 @@ export interface MarkOption {
   readonly point: Vec;
   readonly position: Vec;
   readonly rank: number;
+  readonly facetId: number;
+  readonly references: readonly Line[];
   readonly markId?: number;
 }
 
@@ -153,22 +156,32 @@ export function paperGeometry(paper: PaperState) {
     corners,
     marked,
     contains: (point: Vec) => hit(point) !== undefined,
-    markOptions(screen: Vec, transform: Mat, radius: number): MarkOption[] {
+    markOptions(screen: Vec, transform: Mat, radius: number, locked?: MarkOption): MarkOption[] {
       const world = apply(invert(transform), screen);
-      const reach = radius / Math.hypot(transform.a, transform.b);
+      const reach = releaseRadius(radius) / Math.hypot(transform.a, transform.b);
       const options: (MarkOption & {visible: boolean})[] = [];
-      for (const [layer, {facet}] of faces.entries()) {
+      for (const [layer, {facet, poly}] of faces.entries()) {
         const local = apply(invert(facet.transform), world);
-        for (const point of materialIntersections(state, local, reach)) {
-          if (!location(facet.poly, point) || options.some(option => distance(option.point, point) <= EPS)) continue;
+        for (const {point, references} of materialIntersectionDetails(state, local, reach)) {
           const position = apply(facet.transform, point);
+          // Containment uses the displayed polygon and the displayed intersection.
+          if (!location(poly, position) || options.some(option => distance(option.point, point) <= EPS)) continue;
           const markId = state.marks?.find(mark => distance(mark.point, point) <= EPS)?.id;
-          const visible = !faces.slice(0, layer).some(({poly}) => location(poly, position));
-          options.push({point, position, rank: faces.length - layer, markId, visible});
+          const visible = visibleAt(position, layer);
+          options.push({point, position, rank: faces.length - layer, facetId: facet.id, markId, visible,
+            references: references.flatMap(line => {
+              const local = clipCrease(line, facet.poly);
+              return local ? [applyToLine(facet.transform, local)] : [];
+            })});
         }
       }
-      const closest = nearestPoint(options.filter(option => option.visible).map(({position}) => position), screen, transform, radius);
-      return closest ? options.filter(option => distance(option.position, closest) <= EPS) : [];
+      const key = (option: MarkOption) => `${option.facetId}/${pointKey(option.point)}`;
+      const candidates = options.filter(option => option.visible ||
+        options.some(other => other.visible && distance(option.position, other.position) <= EPS));
+      return selectSnap(candidates.map(value => ({key: key(value), value,
+        score: Math.round(distance(apply(transform, value.position), screen) * 1e6) / 1e6 + (value.visible ? 0 : 1e-6)
+      })), radius, locked && key(locked))
+        .map(({value}) => value);
     },
     snapPoints() {
       const { minX, maxX, minY, maxY } = bounds(faces.flatMap(({poly}) => poly));
@@ -208,6 +221,15 @@ export function paperGeometry(paper: PaperState) {
     snapLine(screen: Vec, transform: Mat, radius: number) {
       const hit = nearestLine(lines, screen, transform, radius, ({layer}, point) => visibleAt(point, layer));
       if (hit) return {line: hit.reference.line, point: hit.point};
+    },
+    lineCandidates(screen: Vec, transform: Mat, radius: number) {
+      return lines.flatMap(reference => {
+        const hit = nearestLine([reference], screen, transform, releaseRadius(radius),
+          ({layer}, point) => visibleAt(point, layer));
+        if (!hit) return [];
+        return [{key: `pin/${reference.layer}/${lineKey(reference.line)}`,
+          score: distance(screen, apply(transform, hit.point)), value: reference.line}];
+      });
     },
   };
 }

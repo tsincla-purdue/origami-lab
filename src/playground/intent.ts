@@ -11,6 +11,9 @@ export interface Interpretation {
 /** Choose among approved material identities without changing the gesture's geometric solutions. */
 export function interpretDraft(state: PaperState, draft: Draft): Interpretation[] {
   if (draft.side === undefined) return [];
+  if (draft.alternatives?.length) {
+    return [draft, ...draft.alternatives].flatMap(option => interpretDraft(state, {...option, alternatives: undefined}));
+  }
   const constraint = draft.constraint;
   const geometry = constraint
     ? [constraint.index, ...constraint.solutions.keys()].filter((index, i) => i === 0 || index !== constraint.index)
