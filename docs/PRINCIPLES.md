@@ -22,27 +22,39 @@ Mouse, finger, and stylus interactions should feel like *handling paper*, not is
 
 People naturally say “hold this corner,” “bring that point onto this crease,” or “fold this flap back.” They need not provide a crease equation or a list of polygon IDs. The geometric engine should interpret these partial intentions, solve the relevant constraints, and assess possible motions. Expose meaningful alternatives when an intention has more than one realization.
 
-### 4. One world, shared by humans and AI
+### 4. Perfection through imperfect manipulation
+
+The human hand need not be exact for the mathematics to be exact.
+
+A person may drag approximately, hesitate, overshoot, or approach a construction from an unexpected direction. When such an interaction unambiguously expresses a geometric constraint, the environment should recognize that intention and realize it with mathematical precision.
+
+**Tolerance belongs at the interface; rigor belongs in the mathematics.**
+
+This does not mean silently replacing approximate gestures with exact constructions. Freehand operations, ambiguous intentions, and unsupported constraints must remain distinguishable from certified mathematics. Exactness is earned through the acquisition and verification of meaningful relationships, not imposed retrospectively on numerical approximations.
+
+Our ambition is to make mathematical precision accessible through natural, imperfect, exploratory action. The technology should absorb the mechanical demands of exactness while leaving the imagination, curiosity, and pleasure of discovery with the explorer.
+
+### 5. One world, shared by humans and AI
 
 A human's gesture and an AI model's proposal should compile into the **same semantic action language**, using the same solver, validator, material state, and history. The model need not move a virtual mouse, but it should have no privileged way to teleport paper into a configuration a human cannot make. A human should be able to continue a model's construction, and a model should be able to continue a human's.
 
-### 5. Resistance is productive; validity must be earned
+### 6. Resistance is productive; validity must be earned
 
 The geometry's refusal is part of the creative process. Distinguish moves that are **accepted**, **rejected**, and **unverified** under an explicit idealized paper model. A plausible flat endpoint alone is not proof that a folding motion exists. Do not silently replace a requested motion with a different one, nor relax a validator merely to make a demonstration pass. Ambiguity and limits should be visible and explorable.
 
-### 6. Preserve the object and its history
+### 7. Preserve the object and its history
 
 Maintain material identity, front/back orientation, layer order, persistent creases, and the distinction between **Fold**, **Unfold**, and **Undo**. Every construction should be replayable and exportable with its exact actions, assumptions, and validation outcomes. Unsuccessful experiments and surprising intermediate states may also be worth preserving.
 
-### 7. Invention is not the same as optimization
+### 8. Invention is not the same as optimization
 
 A beautiful folding is more than an appealing final silhouette. Its economy, clever intermediate transformations, tactile delight, and unforeseen possibilities can matter as much as the result. We should support exploration and diversity, not train everything toward one standard of prettiness or one canonical solution.
 
-### 8. Small intelligence is a deliberate research choice
+### 9. Small intelligence is a deliberate research choice
 
 The point of a small, quirky model is not merely to save compute. It is to test how much inventiveness can emerge when a modest agent acts inside a richly structured mathematical environment. Compare it honestly with random search and human exploration. Look for discoveries that increase curiosity, not only scores or the number of finished objects.
 
-### 9. The human remains an explorer
+### 10. The human remains an explorer
 
 The model should invite collaboration, not replace the pleasure of discovery. People can propose challenges, intervene mid-construction, reject suggestions, replay discoveries, and develop their own variations. Technology succeeds here when it expands what people can notice and try.
 
@@ -51,5 +63,7 @@ The model should invite collaboration, not replace the pleasure of discovery. Pe
 We test the **actual manipulation**, not only the underlying geometric formula. Canonical human-facing exercises include: dog-ear a corner and then fold the whole sheet in half without selecting hidden facet IDs; fold a sheet in half and independently fold its upper flap back; fold and unfold to retain a reference crease; pin one point and bring another point onto that crease; Undo and immediately choose a different continuation.
 
 For each essential interaction, prefer a browser test that uses ordinary mouse or touch gestures and inspects the resulting material geometry. A test that succeeds only through a special dropdown or internal API does not establish that the intended tactile interaction works. Pair automated tests with actual human play, and document what the simulator still cannot do.
+
+The human-made **“perfect imperfect hexagon”** is a standing integration case: preserve the actual gesture trace, replay its physical history, compare the entire folded silhouette with the intended regular hexagon, and report which exact geometric relationships are certified or remain open. Numerical agreement is evidence of accuracy, not a substitute for a symbolic proof from the recorded construction.
 
 These are guiding principles, not claims that every capability already exists. Change the implementation as we learn; keep the purpose visible.
