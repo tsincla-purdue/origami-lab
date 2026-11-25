@@ -125,6 +125,11 @@ locally without a server-side service or a model.
 
 Audit saved JSON with `python3 scripts/audit_experiment.py saved-experiment.json`. See the [soundness contract](docs/SOUNDNESS.md).
 
+The human-made **perfect imperfect hexagon** is a standing regression. Ordinary
+CI replays its 36 operations, independently measures the union of the 15 final
+facets, and checks the symbolic provenance. See the benchmark for rerun commands,
+the recorded turnover offset, and current proof gaps. [Hexagon benchmark](docs/verification/perfect-imperfect-hexagon.md)
+
 Paper styles are painted in the original sheet coordinates. Each facet carries
 its original polygon and pattern through every reflection. The renderer shows
 the appropriate face and draws upper layers over lower ones. The selected
