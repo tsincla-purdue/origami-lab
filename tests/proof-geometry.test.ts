@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createExperiment, importExperiment, inspectGeometry, realizeMarkedPerpendicular, recordMark, recordMove, recordUnfold, serializeExperiment, validate,
+import { createExperiment, importExperiment, inspectGeometry, realizeMarkedPerpendicular, recordMark, recordMove, recordUnfold, serializeExperiment, undoMove, validate,
   solvePointOntoLine, type Experiment, type Move } from '../src/lab';
 import { recordGestureMove } from '../src/lab/experiment';
 import type { CapturedGeometry } from '../src/lab/proof-geometry';
@@ -17,6 +17,20 @@ function equilateral(first: CapturedGeometry = bisector): Experiment {
   const [solution] = solvePointOntoLine(a, b, {a: {x: .5, y: 0}, b: {x: .5, y: 1}}, true).solutions;
   const {line: {a: start, b: end}, side} = solution;
   return recordGestureMove(experiment, {line: [[start.x, start.y], [end.x, end.y]], side}, upper);
+}
+
+function conditionalPerpendicular() {
+  let experiment = recordUnfold(recordGestureMove(createExperiment(), center, bisector));
+  const horizontal: Move = {line: [[0, .25], [1, .25]], side: -1};
+  experiment = recordUnfold(recordGestureMove(experiment, horizontal, {kind: 'freehand'}));
+  experiment = recordMark(experiment, {x: .5, y: 1}, [{edge: 2}, {crease: 0}]);
+  experiment = recordMark(experiment, {x: .5, y: .25}, [{crease: 0}, {crease: 1}]);
+  const {line, landing} = realizeMarkedPerpendicular(experiment, 5, 6, 0, 0)!;
+  const [moving, through] = experiment.final.marks!.map(({id, point}) => ({point, material: {facetId: 0, point, markId: id}}));
+  const move: Move = {line: [[line.a.x, line.a.y], [line.b.x, line.b.y]], side: line.b.x > line.a.x ? 1 : -1};
+  const capture = {kind: 'marked-perpendicular', moving, through, landing,
+    source: {facetId: 0, crease: 0, line: experiment.final.creases[0]}} as const;
+  return {experiment, move, capture};
 }
 
 describe('geometric evidence in experiment files', () => {
@@ -111,9 +125,27 @@ describe('geometric evidence in experiment files', () => {
     const {geometry: _geometry, ...physicalMove} = move;
     const recorded = recordGestureMove(experiment, physicalMove, bisector);
     expect(recorded.attempts[0].validation.status).toBe('accepted');
-    expect(recorded.attempts[0].move).toEqual(move);
-    expect(inspectGeometry(recorded)[0].status).toBe('invalid');
-    expect(() => importExperiment(serializeExperiment(recorded))).toThrow(/inconsistent with the selected reflection/);
+    const replayed = importExperiment(serializeExperiment(recorded));
+    expect(replayed).toEqual(recorded);
+    expect(replayed.attempts[0].move).toEqual(physicalMove);
+    expect(replayed.final).toEqual(recordMove(experiment, physicalMove).final);
+    expect(replayed.attempts[0]).toHaveProperty('geometryDiagnostic.reason', expect.stringContaining('selected reflection'));
+    expect(inspectGeometry(replayed)[0].status).toBe('quarantined');
+    const unfolded = recordUnfold(replayed);
+    expect(recordUnfold(recorded)).toEqual(unfolded);
+    expect(unfolded.final.facets).toEqual(experiment.final.facets);
+    expect(undoMove(replayed)).toEqual(experiment);
+  });
+
+  it('cannot use a quarantine diagnostic to bypass an asserted construction', () => {
+    const file = JSON.parse(serializeExperiment(equilateral()));
+    const attempt = file.attempts[2];
+    attempt.geometryDiagnostic = {code: 'inconsistent-capture', kind: 'equilateral-o5', reason: 'Wrong branch'};
+    attempt.move.geometry.branch = 'below-pin';
+    expect(() => importExperiment(JSON.stringify(file))).toThrow(/Geometric evidence at attempt 3/);
+    delete attempt.move.geometry;
+    attempt.geometryDiagnostic.status = 'certified';
+    expect(() => importExperiment(JSON.stringify(file))).toThrow(/Geometric evidence at attempt 3/);
   });
 });
 
@@ -188,18 +220,9 @@ describe('compositional exact constructions', () => {
   });
 
   it('realizes an exterior landing while leaving the physical refusal authoritative', () => {
-    let experiment = recordUnfold(recordGestureMove(createExperiment(), center, bisector));
-    const horizontal: Move = {line: [[0, .25], [1, .25]], side: -1};
-    experiment = recordUnfold(recordGestureMove(experiment, horizontal, {kind: 'freehand'}));
-    experiment = recordMark(experiment, {x: .5, y: 1}, [{edge: 2}, {crease: 0}]);
-    experiment = recordMark(experiment, {x: .5, y: .25}, [{crease: 0}, {crease: 1}]);
-    const realized = realizeMarkedPerpendicular(experiment, 5, 6, 0, 0);
-    expect(realized?.landing).toEqual({x: .5, y: -.5});
-    const {line, landing} = realized!;
-    const [moving, through] = experiment.final.marks!.map(({id, point}) => ({point, material: {facetId: 0, point, markId: id}}));
-    const move: Move = {line: [[line.a.x, line.a.y], [line.b.x, line.b.y]], side: line.b.x > line.a.x ? 1 : -1, angle: 90};
-    const proposed = recordGestureMove(experiment, move, {kind: 'marked-perpendicular', moving, through, landing,
-      source: {facetId: 0, crease: 0, line: experiment.final.creases[0]}});
+    const {experiment, move, capture} = conditionalPerpendicular();
+    expect(capture.landing).toEqual({x: .5, y: -.5});
+    const proposed = recordGestureMove(experiment, {...move, angle: 90}, capture);
     expect(proposed.attempts.at(-1)?.validation.status).toBe('unverified');
     expect(proposed.final).toEqual(experiment.final);
     const report = inspectGeometry(importExperiment(serializeExperiment(proposed))).at(-1);
@@ -207,6 +230,39 @@ describe('compositional exact constructions', () => {
     const tampered = JSON.parse(serializeExperiment(proposed));
     tampered.attempts[5].move.sources = [{edge: 2}, {crease: 0}];
     expect(() => importExperiment(JSON.stringify(tampered))).toThrow(/mark does not match/);
+  });
+
+  it('keeps an accepted conditional perpendicular through import, including with no proof budget', () => {
+    const {experiment, move, capture} = conditionalPerpendicular();
+    const folded = recordGestureMove(experiment, move, capture);
+    expect(folded.attempts.at(-1)?.validation.status).toBe('accepted');
+    const text = serializeExperiment(folded);
+    expect(inspectGeometry(importExperiment(text)).at(-1)?.status).toBe('conditional');
+    const options = {maxDerivedNodes: 0};
+    const replayed = importExperiment(text, options);
+    expect(replayed).toEqual(folded);
+    expect(replayed.attempts.at(-1)?.move).toMatchObject({geometry: capture});
+    expect(inspectGeometry(replayed, options).at(-1)?.status).toBe('inconclusive');
+  });
+
+  it('keeps the physical fold when a marked perpendicular capture has a contradictory landing', () => {
+    const {experiment, move, capture} = conditionalPerpendicular();
+    const badCapture = {...capture, landing: {x: .52, y: capture.landing.y}};
+    const folded = recordGestureMove(experiment, move, badCapture);
+    const replayed = importExperiment(serializeExperiment(folded));
+    const numerical = recordMove(experiment, move);
+    expect(replayed.final).toEqual(numerical.final);
+    expect(replayed.attempts.at(-1)).toMatchObject({
+      move, validation: {status: 'accepted'},
+      geometryDiagnostic: {kind: 'marked-perpendicular', reason: expect.stringContaining('reflected landing')},
+    });
+    expect(replayed.attempts.at(-1)?.move).not.toHaveProperty('geometry');
+    expect(inspectGeometry(replayed).at(-1)?.status).toBe('quarantined');
+
+    // The same contradiction, submitted as an assertion, remains an import error.
+    const file = JSON.parse(serializeExperiment(numerical));
+    file.attempts.at(-1).move.geometry = {version: 1, ...badCapture, projection: {axis: move.line, side: move.side}};
+    expect(() => importExperiment(JSON.stringify(file))).toThrow(/disagree with the selected crease/);
   });
 
   it('reports unsupported circle-line roots without approximating an exact result', () => {

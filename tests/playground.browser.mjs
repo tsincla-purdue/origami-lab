@@ -31,7 +31,16 @@ async function downloadJSON(page, name) {
   const [download] = await Promise.all([
     page.waitForEvent('download'), page.getByRole('button', {name, exact: true}).click(),
   ]);
-  return JSON.parse(await readFile(await download.path(), 'utf8'));
+  const text = await readFile(await download.path(), 'utf8');
+  const file = JSON.parse(text);
+  if (name === 'Export experiment') {
+    const replayed = await page.evaluate(async json => {
+      const {importExperiment, serializeExperiment} = await import(new URL('./api/index.js', location.href).href);
+      return JSON.parse(serializeExperiment(importExperiment(json)));
+    }, text);
+    expect(replayed).toEqual(file);
+  }
+  return file;
 }
 
 async function importJSON(page, experiment) {
@@ -1285,6 +1294,14 @@ test('an oblique freehand crease supports a conditional marked perpendicular aft
   await expect(page.locator('#geometry-report')).toContainText('Near match');
   const approximate = await downloadJSON(page, 'Export experiment');
   expect(approximate.attempts.at(-1).move.geometry).toEqual({version: 1, kind: 'freehand'});
+
+  const tampered = structuredClone(folded);
+  tampered.attempts.at(-1).move.geometry.source.crease = 1;
+  await page.locator('#import-file').setInputFiles({
+    name: 'wrong-supporting-crease.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(tampered)),
+  });
+  await expect(page.locator('#notice')).toContainText('Geometric evidence at attempt');
+  expect(await downloadJSON(page, 'Export experiment')).toEqual(approximate);
 });
 
 test('competing marked perpendiculars expose distinct fold previews', async ({page}) => {

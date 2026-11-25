@@ -15,7 +15,7 @@ export interface GeometryCheckOptions {
 }
 
 export interface GeometryReport {
-  readonly status: 'certified' | 'conditional' | 'near-match' | 'unverified' | 'inconclusive' | 'invalid';
+  readonly status: 'certified' | 'conditional' | 'near-match' | 'unverified' | 'inconclusive' | 'invalid' | 'quarantined';
   readonly detail: string;
   readonly dependencies: readonly string[];
   readonly assumptions?: readonly string[];
@@ -453,7 +453,10 @@ function replayGeometry(experiment: Experiment, options: GeometryCheckOptions = 
         result = id ? deduction('Exact intersection of the two selected material lines.', graph.dependencies(id), id)
           : report('inconclusive', 'A source line has no available exact evaluation.');
       } else if (!entry.operation) {
-        result = check(entry.move, attempt);
+        const diagnostic = entry.geometryDiagnostic;
+        result = diagnostic && entry.move.geometry === undefined
+          ? report('quarantined', `The fold was saved. The ${diagnostic.kind} capture failed consistency checks. ${diagnostic.reason}`)
+          : check(entry.move, attempt);
       }
     } catch (error) {
       result = report(error instanceof ProofBudget || error instanceof ProofUnsupported ? 'inconclusive' : 'invalid', (error as Error).message);

@@ -17,8 +17,13 @@ continues to run.
 | Unverified | References were absent, ambiguous, unsupported, or depended on an unproved construction. |
 | Inconclusive | The checker exhausted its arithmetic or graph budget, or the projection could not be bound reliably. |
 | Invalid | Recorded references are malformed or contradict the numerical operation. |
+| Quarantined | The gesture recorder withheld inconsistent geometry and saved a diagnostic with the physical fold. |
 
-Invalid evidence is visible in a recorded gesture and rejected on import.
+The recorder checks captured evidence against the tentative attempt. A fold
+with inconsistent capture keeps its physical result and a
+`geometryDiagnostic` containing the capture kind and reason. The diagnostic
+contributes no symbolic operands. Import rejects invalid assertions and
+requires diagnostics to be separate from asserted fold geometry.
 Unverified and inconclusive evidence stays with the replayed experiment.
 Only a successful symbolic check produces a certificate.
 
@@ -153,6 +158,11 @@ setting bounds symbolic work for a particular inspection or import, so a
 later check can revisit the same evidence with a larger budget. The
 independent [material audit](SOUNDNESS.md) continues to check numerical sheet
 invariants and has its own verdict.
+
+Gesture recording and ordinary import use the same consistency checker and
+proof budget. The mark recorder also checks its selected source pair before
+committing it. Projection tolerances bound the checking policy in this slice.
+Formal projection error bounds remain open.
 
 ## Concrete example and compatibility
 

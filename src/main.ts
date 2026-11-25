@@ -390,7 +390,8 @@ function renderHistory() {
   }
   const {status, detail, dependencies, assumptions} = geometryReports[cursor - 1];
   const label = status === 'certified' ? 'Certified' : status === 'conditional' ? 'Conditional' : status === 'near-match' ? 'Near match'
-    : status === 'inconclusive' ? 'Inconclusive' : status === 'invalid' ? 'Invalid' : 'Unverified';
+    : status === 'inconclusive' ? 'Inconclusive' : status === 'invalid' ? 'Invalid'
+    : status === 'quarantined' ? 'Quarantined' : 'Unverified';
   get('geometry-report').textContent = `${label}. ${detail}`;
   get('geometry-dependencies').textContent = [
     dependencies.length ? `References · ${dependencies.join(', ')}` : '',
