@@ -10,7 +10,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from scripts.audit_experiment import audit  # noqa: E402
+from scripts.audit_experiment import AREA, DIST, audit, dot, edges, frame, polygon, transform, unit, world  # noqa: E402
+from silhouette import coverage, hull, uncovered_edge  # noqa: E402
+
+HEXAGON = ROOT / "tests/fixtures/perfect-imperfect-hexagon.json"
 
 
 def export_fixtures():
@@ -22,6 +25,75 @@ def project(matrix, p):
     x, y = p
     return (matrix["a"] * x + matrix["c"] * y + matrix["e"],
             matrix["b"] * x + matrix["d"] * y + matrix["f"])
+
+
+class HumanHexagon(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.experiment = json.loads(HEXAGON.read_text(encoding="utf-8"))
+
+    def test_every_operation_passes_the_independent_material_checks(self):
+        report = audit(self.experiment)
+        failures = [entry for entry in report["operations"] if entry["status"] == "fail"]
+        self.assertFalse(failures, f"First material soundness failure: {failures[:1]}")
+        rows = report["operations"]
+        self.assertEqual([row["step"] for row in rows], list(range(38)))
+        self.assertTrue(all(row["checked"] for row in rows), rows)
+
+    def test_silhouette_metrics(self):
+        final = self.experiment["final"]
+        self.assertEqual(len(final["facets"]), 15)
+        root3 = math.sqrt(3)
+        side, target_area = root3 / 6, root3 / 8
+        reference = [(1/2, root3/2), (3/4, 5*root3/12), (3/4, root3/4),
+                     (1/2, root3/6), (1/4, root3/4), (1/4, 5*root3/12)]
+        intrinsic = [[transform(facet, p) for p in polygon(facet)] for facet in final["facets"]]
+        displayed = [[world(final, facet, p) for p in polygon(facet)] for facet in final["facets"]]
+        sign, offset = frame(final)
+        self.assertEqual((sign, offset), (-1, 1.125))
+        display_reference = [(sign * x + offset, y) for x, y in reference]
+        for name, polygons, expected in (("intrinsic", intrinsic, reference), ("displayed", displayed, display_reference)):
+            with self.subTest(frame=name):
+                # A support polygon alone would hide gaps. Verify coverage of
+                # both its boundary and its interior before using its corners.
+                boundary = hull(polygons)
+                self.assertEqual(len(boundary), 6, boundary)
+                perimeter_gap = max(uncovered_edge(polygons, *edge) for edge in edges(boundary))
+                _, _, hull_gap, hull_outside = coverage(polygons, boundary)
+                self.assertLessEqual(perimeter_gap, DIST)
+                self.assertLessEqual(hull_gap + hull_outside, AREA)
+                cyclic = [ordered[i:] + ordered[:i]
+                          for ordered in (expected, expected[::-1]) for i in range(6)]
+                vertex_error = min(max(math.dist(a, b) for a, b in zip(boundary, match)) for match in cyclic)
+                side_error = max(abs(math.dist(a, b) - side) for a, b in edges(boundary))
+                angles = [math.degrees(math.acos(dot(unit(p, boundary[i-1]), unit(p, boundary[(i+1) % 6]))))
+                          for i, p in enumerate(boundary)]
+                angle_error = max(abs(angle - 120) for angle in angles)
+                union_area, _, missing, outside = coverage(polygons, expected)
+                print(f"Hexagon {name}: max vertex error {vertex_error:.3g}, max side error {side_error:.3g}, "
+                      f"max angle error {angle_error:.3g}°, union area {union_area:.16g}, "
+                      f"missing {missing:.3g}, excess {outside:.3g}.")
+                self.assertLessEqual(vertex_error, DIST)
+                self.assertLessEqual(side_error, 2 * DIST)
+                self.assertLessEqual(angle_error, math.degrees(4 * DIST / side))
+                self.assertLessEqual(abs(union_area - target_area), AREA)
+                self.assertLessEqual(missing + outside, AREA)
+
+        # Show the cost of comparing screen coordinates to the intrinsic target directly.
+        _, _, missing, outside = coverage(displayed, reference)
+        print(f"Displayed versus untransformed reference: center shift {offset - 1:.3g} in x, "
+              f"symmetric-difference area {missing + outside:.12g}.")
+
+    def test_coverage_detects_a_hole_and_protrusion_even_when_areas_agree(self):
+        def rectangle(x, y, w, h):
+            return [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+
+        square = rectangle(0, 0, 2, 2)
+        ring = [rectangle(0, 0, 2, .5), rectangle(0, 1.5, 2, .5),
+                rectangle(0, .5, .5, 1), rectangle(1.5, .5, .5, 1)]
+        self.assertEqual(hull(ring), square)
+        self.assertEqual(coverage(ring, square), (3, 4, 1, 0))
+        self.assertEqual(coverage([*ring, ring[0], rectangle(2, 0, .5, 2)], square), (4, 4, 1, 1))
 
 
 class IndependentAudit(unittest.TestCase):
