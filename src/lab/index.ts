@@ -6,7 +6,7 @@ export { activeFoldAttempts, createExperiment, recordMove, recordUnfold, canUnfo
 export { paperInView } from './paper-pose';
 export type { PaperPose } from './paper-pose';
 export type { Experiment, Attempt } from './experiment';
-export { inspectGeometry } from './proof-geometry';
+export { inspectGeometry, realizeMarkedPerpendicular } from './proof-geometry';
 export type { GeometryCheckOptions, GeometryEvidence, GeometryReport } from './proof-geometry';
 export { materialIntersections, visibleMaterialMarks } from './material-points';
 export type { MaterialMark } from './material-points';

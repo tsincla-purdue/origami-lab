@@ -9,7 +9,7 @@ import {
 } from './lab';
 import type { Experiment, Move, PaperStyle, Validation } from './lab';
 import { MAX_EXPERIMENT_LENGTH, recordGestureMove } from './lab/experiment';
-import { inspectGeometry, type CapturedGeometry, type GeometryReport } from './lab/proof-geometry';
+import { inspectGeometry, realizeMarkedPerpendicular, type CapturedGeometry, type GeometryReport } from './lab/proof-geometry';
 import { connectGestures, draftCapture, type ConstraintIssue, type CornerSelection, type Draft, type Tool } from './playground/gestures';
 import { interpretDraft, type Interpretation } from './playground/intent';
 import {
@@ -75,7 +75,8 @@ let shownSelection: CornerSelection | undefined;
 
 const atTip = () => cursor === experiment.attempts.length && playback === undefined;
 const editable = () => atTip() && !creaseView;
-const gestures = connectGestures(paper, { snapping: () => snapToggle.checked, show: showDraft, commit: settleDraft });
+const gestures = connectGestures(paper, {snapping: () => snapToggle.checked, show: showDraft, commit: settleDraft,
+  markedPerpendicular: (moving, through, crease, facetId) => realizeMarkedPerpendicular(experiment, moving, through, crease, facetId)});
 let shownMarkOptions: ReturnType<typeof gestures.markOptions> | undefined;
 const selectedMark = () => gestures.markOptions()[markLayer.selectedIndex];
 
@@ -381,17 +382,21 @@ function renderHistory() {
   }
   const entry = experiment.attempts[cursor - 1];
   const details = get<HTMLDetailsElement>('geometry-proof');
-  details.hidden = !entry || Boolean(entry.operation);
+  details.hidden = !entry || Boolean(entry.operation && !(entry.operation === 'mark' && entry.move.sources));
   if (details.hidden) return;
   if (inspected !== experiment) {
     geometryReports = inspectGeometry(experiment);
     inspected = experiment;
   }
-  const {status, detail, dependencies} = geometryReports[cursor - 1];
-  const label = status === 'certified' ? 'Certified' : status === 'near-match' ? 'Near match'
-    : status === 'inconclusive' ? 'Inconclusive' : status === 'invalid' ? 'Invalid' : 'Unverified';
+  const {status, detail, dependencies, assumptions} = geometryReports[cursor - 1];
+  const label = status === 'certified' ? 'Certified' : status === 'conditional' ? 'Conditional' : status === 'near-match' ? 'Near match'
+    : status === 'inconclusive' ? 'Inconclusive' : status === 'invalid' ? 'Invalid'
+    : status === 'quarantined' ? 'Quarantined' : 'Unverified';
   get('geometry-report').textContent = `${label}. ${detail}`;
-  get('geometry-dependencies').textContent = dependencies.length ? `References · ${dependencies.join(', ')}` : '';
+  get('geometry-dependencies').textContent = [
+    dependencies.length ? `References · ${dependencies.join(', ')}` : '',
+    assumptions?.length ? `Assumptions · ${assumptions.join(', ')}` : '',
+  ].filter(Boolean).join(' · ');
 }
 
 function render() {
@@ -511,7 +516,7 @@ markButton.addEventListener('click', () => {
   if (!editable() || !mark) return;
   try {
     const next = mark.markId === undefined
-      ? recordMark(experiment, mark.point)
+      ? recordMark(experiment, mark.point, mark.sources)
       : recordRemoveMark(experiment, mark.markId);
     replaceExperiment(next, next.attempts.length);
   } catch (error) {

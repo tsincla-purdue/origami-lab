@@ -102,7 +102,8 @@ export function constraintMarkup(pin: Vec | undefined, draft: Draft | undefined,
   const alternatives = [...others].map(point => circle(point, 6 * unit, 'alternative-landing')).join('');
   return (line ? segment(line.a, line.b, 'constraint-target') : '') +
     (source ? segment(source.a, source.b, 'constraint-source') : '') +
-    (source && draft?.lineIntent?.kind === 'perpendicular-point' ? perpendicularMarker(draft, source, unit) : '') +
+    (source && draft && (draft.lineIntent?.kind === 'perpendicular-point' || draft.capture?.kind === 'marked-perpendicular')
+      ? perpendicularMarker(draft, source, unit) : '') +
     alternatives + (pin ? circle(pin, 6 * unit, 'pin-anchor') : '');
 }
 

@@ -31,7 +31,16 @@ async function downloadJSON(page, name) {
   const [download] = await Promise.all([
     page.waitForEvent('download'), page.getByRole('button', {name, exact: true}).click(),
   ]);
-  return JSON.parse(await readFile(await download.path(), 'utf8'));
+  const text = await readFile(await download.path(), 'utf8');
+  const file = JSON.parse(text);
+  if (name === 'Export experiment') {
+    const replayed = await page.evaluate(async json => {
+      const {importExperiment, serializeExperiment} = await import(new URL('./api/index.js', location.href).href);
+      return JSON.parse(serializeExperiment(importExperiment(json)));
+    }, text);
+    expect(replayed).toEqual(file);
+  }
+  return file;
 }
 
 async function importJSON(page, experiment) {
@@ -1159,6 +1168,182 @@ test('pointer-only hold and drag commits the unique equilateral landing on relea
   await expect(page.locator('#paper-art .paper-facet').last()).toHaveAttribute('data-face', 'back');
   await verifyReplayAndUndo(page, experiment);
   await expect(page.locator('.paper-reference')).toHaveAttribute('x1', '0.5');
+});
+
+for (const pointer of ['mouse', 'pen', 'touch']) {
+  test(`dragging a marked point past another mark with ${pointer} acquires a perpendicular crease`, async ({page, context}) => {
+    const unfold = page.getByRole('button', {name: 'Unfold', exact: true});
+    for (const [start, end] of [[[1, 0], [0, 0]], [[0, 1], [0, 0]]]) {
+      await page.locator('#paper').scrollIntoViewIfNeeded();
+      await dragCorner(page, start, end);
+      await unfold.click();
+    }
+    for (const point of [[.5, 1], [.5, .5]]) {
+      await page.locator('#paper').scrollIntoViewIfNeeded();
+      await tapCorner(page, point, 4);
+      await page.getByRole('button', {name: 'Mark point', exact: true}).click();
+    }
+    await page.locator('#paper').scrollIntoViewIfNeeded();
+    if (pointer === 'mouse') {
+      await startMouseDrag(page, [.5, 1], [.5, .5]);
+      await expect(page.locator('#gesture-reason')).toContainText('Point onto mark');
+      await page.keyboard.press('Escape');
+      await page.mouse.up();
+    }
+    const session = await context.newCDPSession(page);
+    const send = async (phase, point) => {
+      if (pointer === 'touch') {
+        await session.send('Input.dispatchTouchEvent', {type: `touch${phase}`, touchPoints: phase === 'End' ? [] : [point]});
+      } else {
+        const type = {Start: 'mousePressed', Move: 'mouseMoved', End: 'mouseReleased'}[phase];
+        await session.send('Input.dispatchMouseEvent', {type, ...point, pointerType: pointer, button: 'left',
+          buttons: phase === 'End' ? 0 : 1, clickCount: 1});
+      }
+    };
+    await send('Start', await screenPoint(page, .5, 1));
+    await send('Move', await screenPoint(page, .515, .012));
+    await expect(page.locator('#gesture-reason')).toContainText('Perpendicular through mark');
+    const jitter = await screenPoint(page, .52, .02);
+    await send('Move', jitter);
+    await expect(page.locator('#gesture-reason')).toContainText('Perpendicular through mark');
+    await expect(page.locator('.drag-destination')).toHaveAttribute('cx', '0.5');
+    await expect(page.locator('.drag-destination')).toHaveAttribute('cy', '0');
+    await expect(page.locator('#gesture-status')).toHaveText('accepted');
+    await send('End', jitter);
+    const experiment = await downloadJSON(page, 'Export experiment');
+    const {move, validation} = experiment.attempts.at(-1);
+    expect(validation.status).toBe('accepted');
+    expect(move.geometry).toMatchObject({
+      kind: 'marked-perpendicular',
+      moving: {material: {markId: 5}},
+      through: {material: {markId: 6}},
+      source: {crease: 0},
+      landing: {x: .5, y: 0},
+    });
+    expect(move.line.every(([, y]) => y === .5)).toBe(true);
+    await page.getByText('Geometric provenance', {exact: true}).click();
+    await expect(page.locator('#geometry-report')).toContainText('Certified');
+    await verifyReplayAndUndo(page, experiment);
+  });
+}
+
+test('an oblique freehand crease supports a conditional marked perpendicular after turnover', async ({page}) => {
+  const unfold = page.getByRole('button', {name: 'Unfold', exact: true});
+  const snapping = page.getByLabel('Snap to points');
+  await snapping.uncheck();
+  await dragCorner(page, [0, 1], [.987, .006]);
+  await unfold.click();
+  await snapping.check();
+
+  // Drawing between opposite edge midpoints constructs the horizontal by O1.
+  await chooseAdvancedCrease(page);
+  await dragCorner(page, [.01, .502], [.99, .498]);
+  await tapCorner(page, [.28, .22]);
+  await page.getByRole('button', {name: 'Confirm fold', exact: true}).click();
+  await page.getByText('Geometric provenance', {exact: true}).click();
+  await expect(page.locator('#geometry-report')).toHaveText('Certified. Exact line through the two selected points.');
+  const scored = await downloadJSON(page, 'Export experiment');
+  expect(scored.attempts.at(-1).move.geometry.points.map(({material}) => material.edgeMidpoint).sort()).toEqual([1, 3]);
+  await unfold.click();
+  const {a, b} = scored.final.creases[0];
+  const p = a.x < b.x ? a : b;
+  const q = {x: a.x + (.5 - a.y) * (b.x - a.x) / (b.y - a.y), y: .5};
+  for (const {x, y} of [p, q]) {
+    await page.locator('#paper').scrollIntoViewIfNeeded();
+    await tapCorner(page, [x, y], 3);
+    await page.getByRole('button', {name: 'Mark point', exact: true}).click();
+  }
+  const marked = await downloadJSON(page, 'Export experiment');
+  const ids = marked.final.marks.map(({id}) => id);
+  await page.getByRole('button', {name: 'Flip over', exact: true}).click();
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  const grab = [1 - p.x, p.y];
+  const landing = [1 - (2 * q.x - p.x), 2 * q.y - p.y];
+  await startMouseDrag(page, grab, [landing[0] + .015, landing[1] - .007]);
+  await expect(page.locator('#gesture-reason')).toContainText('Perpendicular through mark');
+  await expect(page.locator('.perpendicular-marker')).toBeVisible();
+  await page.mouse.up();
+  const folded = await downloadJSON(page, 'Export experiment');
+  const {move, validation} = folded.attempts.at(-1);
+  expect(validation.status).toBe('accepted');
+  expect(move.geometry).toMatchObject({
+    kind: 'marked-perpendicular',
+    moving: {material: {markId: ids[0]}},
+    through: {material: {markId: ids[1]}},
+    source: {crease: 0},
+  });
+  expect(move.geometry.landing.x).toBeCloseTo(landing[0], 12);
+  expect(move.geometry.landing.y).toBeCloseTo(landing[1], 12);
+  const [[ax, ay], [bx, by]] = move.line;
+  expect(Math.abs((bx - ax) * (a.x - b.x) + (by - ay) * (b.y - a.y))).toBeLessThan(1e-12);
+  expect(Math.abs((bx - ax) * (q.y - ay) - (by - ay) * (1 - q.x - ax))).toBeLessThan(1e-12);
+  await expect(page.locator('#geometry-report')).toContainText('Conditional');
+  await expect(page.locator('#geometry-dependencies')).toContainText('step:1:crease:0:freehand');
+  await unfold.click();
+  const unfolded = await downloadJSON(page, 'Export experiment');
+  expect(unfolded.final.marks).toEqual(marked.final.marks);
+  expect(unfolded.final.pose.reversed).toBe(true);
+  await verifyReplayAndUndo(page, unfolded);
+  await unfold.click();
+
+  // A nearby freehand drag stays a numerical near match even with the same marks visible.
+  await snapping.uncheck();
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await dragCorner(page, grab, [landing[0] + .008, landing[1] + .004]);
+  await page.getByText('Geometric provenance', {exact: true}).click();
+  await expect(page.locator('#geometry-report')).toContainText('Near match');
+  const approximate = await downloadJSON(page, 'Export experiment');
+  expect(approximate.attempts.at(-1).move.geometry).toEqual({version: 1, kind: 'freehand'});
+
+  const tampered = structuredClone(folded);
+  tampered.attempts.at(-1).move.geometry.source.crease = 1;
+  await page.locator('#import-file').setInputFiles({
+    name: 'wrong-supporting-crease.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(tampered)),
+  });
+  await expect(page.locator('#notice')).toContainText('Geometric evidence at attempt');
+  expect(await downloadJSON(page, 'Export experiment')).toEqual(approximate);
+});
+
+test('competing marked perpendiculars expose distinct fold previews', async ({page}) => {
+  const unfold = page.getByRole('button', {name: 'Unfold', exact: true});
+  const snapping = page.getByLabel('Snap to points');
+  await dragCorner(page, [1, 0], [0, 0]);
+  await unfold.click();
+  await snapping.uncheck();
+  for (const landing of [.12, .16]) {
+    await page.locator('#paper').scrollIntoViewIfNeeded();
+    await dragCorner(page, [0, 1], [0, landing]);
+    await unfold.click();
+  }
+  const {final: {creases}} = await downloadJSON(page, 'Export experiment');
+  const heights = creases.slice(1).map(({a}) => a.y);
+  for (const y of [1, ...heights]) {
+    await page.locator('#paper').scrollIntoViewIfNeeded();
+    await tapCorner(page, [.5, y]);
+    await page.getByRole('button', {name: 'Mark point', exact: true}).click();
+  }
+  await snapping.check();
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  const end = heights[0] + heights[1] - 1;
+  const grab = await screenPoint(page, .5, 1);
+  const destination = await screenPoint(page, .5, end);
+  await page.mouse.move(grab.x, grab.y);
+  await page.mouse.down();
+  await page.mouse.move(destination.x, destination.y);
+  await expect(page.locator('#gesture-reason')).toContainText('Perpendicular through mark');
+  await page.mouse.up();
+  const choices = page.getByRole('combobox', {name: 'Snap target'});
+  const perpendiculars = choices.locator('option').filter({hasText: 'Perpendicular through mark'});
+  await expect(perpendiculars).toHaveCount(2);
+  await choices.selectOption({value: await perpendiculars.last().getAttribute('value')});
+  const selected = Number(await page.locator('.drag-destination').getAttribute('cy'));
+  await page.getByRole('button', {name: 'Confirm fold', exact: true}).click();
+  const {attempts} = await downloadJSON(page, 'Export experiment');
+  const {move, validation} = attempts.at(-1);
+  expect(validation.status).toBe('accepted');
+  expect(move.geometry.kind).toBe('marked-perpendicular');
+  expect(move.geometry.landing.y).toBe(selected);
+  expect(heights.some(y => Math.abs(y - move.geometry.through.point.y) < 1e-12)).toBe(true);
 });
 
 test('synthetic equilateral gestures distinguish a certified horizontal from a close freehand axis', async ({page}) => {

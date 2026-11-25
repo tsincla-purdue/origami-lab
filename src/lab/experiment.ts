@@ -3,9 +3,15 @@ import {
   ENGINE_REVISION, NUMERICS, apply, canReverseFold, deepFreeze, initialState, reverseFold, turnPaper,
   withMaterialMarks, type Move, type PaperState, type Validation,
 } from './engine';
-import { materialIntersections } from './material-points';
+import { materialIntersections, materialLine, segmentIntersection, type IntersectionSources } from './material-points';
 import { DEFAULT_PAPER_STYLE, isPaperStyle, type PaperStyle } from './paper-style';
 import { inspectGeometry, type CapturedGeometry, type GeometryCheckOptions, type GeometryReport } from './proof-geometry';
+
+interface GeometryDiagnostic {
+  readonly code: 'inconsistent-capture';
+  readonly kind: string;
+  readonly reason: string;
+}
 
 export type Attempt = {
   readonly validation: Validation;
@@ -13,6 +19,7 @@ export type Attempt = {
 } & ({
   readonly operation?: never;
   readonly move: Move;
+  readonly geometryDiagnostic?: GeometryDiagnostic;
   /** Preserve a historical clearance decision while later attempts use the current validator. */
   readonly validatorVersion?: 1;
 } | {
@@ -25,13 +32,15 @@ export type Attempt = {
   readonly validatorVersion?: never;
 } | {
   readonly operation: 'mark';
-  readonly move: { readonly point: Vec; readonly label: 'Mark point' };
+  readonly move: { readonly point: Vec; readonly label: 'Mark point'; readonly sources?: IntersectionSources };
   readonly validatorVersion?: never;
 } | {
   readonly operation: 'remove-mark';
   readonly move: { readonly markAttempt: number; readonly label: 'Remove mark' };
   readonly validatorVersion?: never;
 });
+
+type FoldAttempt = Extract<Attempt, {operation?: never}>;
 
 export interface Experiment {
   readonly format: 'origami-lab';
@@ -67,17 +76,26 @@ export function setPaperStyle(experiment: Experiment, paperStyle: PaperStyle): E
 
 /** Record an attempted action. Only an accepted action changes the paper. */
 export function recordMove(experiment: Experiment, move: Move): Experiment {
-  const next = appendMove(experiment, move);
+  const next = appendAttempt(experiment, foldAttempt(experiment, move));
   if (move.geometry !== undefined) requireGeometry(inspectGeometry(next).at(-1)!, next.attempts.length);
   return next;
 }
 
-/** Record what the gesture selected independently of the proof result. */
+/** Keep the physical result and check captured evidence before recording it as a claim. */
 export function recordGestureMove(experiment: Experiment, move: Move, capture: CapturedGeometry | undefined): Experiment {
   if (!capture) return recordMove(experiment, move);
   const geometry = capture.kind === 'freehand' ? {version: 1 as const, ...capture}
     : {version: 1 as const, ...capture, projection: {axis: move.line, side: move.side}};
-  return appendMove(experiment, {...move, geometry});
+  const attempt = foldAttempt(experiment, {...move, geometry});
+  const next = appendAttempt(experiment, attempt);
+  const report = inspectGeometry(next).at(-1)!;
+  if (report.status !== 'invalid') return next;
+
+  const {geometry: _withheld, ...physical} = attempt.move;
+  return appendAttempt(experiment, {...attempt, move: physical, geometryDiagnostic: {
+    code: 'inconsistent-capture', kind: typeof capture.kind === 'string' ? capture.kind : 'unknown',
+    reason: report.detail,
+  }});
 }
 
 function requireGeometry(report: GeometryReport, attempt: number) {
@@ -92,13 +110,12 @@ function requireHistorySpace(experiment: Experiment) {
   }
 }
 
-function appendMove(experiment: Experiment, move: Move, validatorVersion?: 1): Experiment {
+function foldAttempt(experiment: Experiment, move: Move, validatorVersion?: 1): FoldAttempt {
   requireHistorySpace(experiment);
   const snapshot = deepFreeze(JSON.parse(JSON.stringify(move)) as Move);
   const result = apply(experiment.final, snapshot, validatorVersion);
   const retainsClearance = validatorVersion === 1 && result.validation.code === 'hinge-cover';
-  const attempt: Attempt = { move: snapshot, ...result, ...(retainsClearance && {validatorVersion}) };
-  return appendAttempt(experiment, attempt);
+  return { move: snapshot, ...result, ...(retainsClearance && {validatorVersion}) };
 }
 
 function appendAttempt(experiment: Experiment, attempt: Attempt): Experiment {
@@ -152,10 +169,25 @@ export function recordFlip(experiment: Experiment): Experiment {
   });
 }
 
-export function recordMark(experiment: Experiment, point: Vec): Experiment {
+export function recordMark(experiment: Experiment, point: Vec, sources?: IntersectionSources): Experiment {
+  const next = appendMark(experiment, point, sources);
+  if (sources !== undefined) requireGeometry(inspectGeometry(next).at(-1)!, next.attempts.length);
+  return next;
+}
+
+function appendMark(experiment: Experiment, point: Vec, sources?: IntersectionSources): Experiment {
   requireHistorySpace(experiment);
   const current = experiment.final;
-  const [exact] = materialIntersections(current, point, EPS);
+  let exact: Vec | undefined;
+  if (sources !== undefined) {
+    if (!Array.isArray(sources) || sources.length !== 2 ||
+        !sources.some(id => id && typeof id === 'object' && 'crease' in id)) {
+      throw new Error('A mark needs two material lines including a crease.');
+    }
+    const [first, second] = sources.map(id => materialLine(current, id));
+    exact = first && second ? segmentIntersection(first, second) : undefined;
+    if (!exact || !(distance(point, exact) <= EPS)) throw new Error('The mark does not match its selected material lines.');
+  } else [exact] = materialIntersections(current, point, EPS);
   if (!exact) throw new Error('Choose a crease intersection on the original sheet.');
   const marks = current.marks ?? [];
   if (marks.some(({point}) => distance(point, exact) <= EPS)) {
@@ -163,7 +195,7 @@ export function recordMark(experiment: Experiment, point: Vec): Experiment {
   }
   const state = withMaterialMarks(current, [...marks, {id: experiment.attempts.length + 1, point: exact}]);
   return appendAttempt(experiment, {
-    operation: 'mark', move: {point: exact, label: 'Mark point'}, state,
+    operation: 'mark', move: {point: exact, label: 'Mark point', ...(sources && {sources})}, state,
     validation: {status: 'accepted', code: 'mark-point', reason: 'Marked an exact intersection on the material sheet.'},
   });
 }
@@ -212,6 +244,12 @@ function matches(expected: unknown, supplied: unknown): boolean {
     entries.every(([key, value]) => Object.hasOwn(object, key) && matches(value, object[key]));
 }
 
+function validDiagnostic(value: unknown): value is GeometryDiagnostic {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 3) return false;
+  const {code, kind, reason} = value as Partial<GeometryDiagnostic>;
+  return code === 'inconsistent-capture' && typeof kind === 'string' && typeof reason === 'string';
+}
+
 /** Replay and verify every attempt. Saved snapshots are assertions, never input to the engine. */
 export function importExperiment(text: string, proofOptions?: GeometryCheckOptions): Experiment {
   if (text.length > MAX_EXPERIMENT_LENGTH) throw new Error('The experiment file is too large.');
@@ -234,6 +272,11 @@ export function importExperiment(text: string, proofOptions?: GeometryCheckOptio
     if (!entry || !entry.move || typeof entry.move !== 'object' || Array.isArray(entry.move)) {
       throw new Error(`Invalid move at attempt ${index + 1}.`);
     }
+    const diagnostic = 'geometryDiagnostic' in entry ? entry.geometryDiagnostic : undefined;
+    if (diagnostic !== undefined &&
+        (!validDiagnostic(diagnostic) || entry.operation !== undefined || entry.move.geometry !== undefined)) {
+      throw new Error(`Geometric evidence at attempt ${index + 1}: Invalid capture diagnostic.`);
+    }
     if (entry.validatorVersion !== undefined &&
         (entry.operation !== undefined || entry.validatorVersion !== 1 || entry.validation?.code !== 'hinge-cover')) {
       throw new Error(`Invalid validator version at attempt ${index + 1}.`);
@@ -247,12 +290,13 @@ export function importExperiment(text: string, proofOptions?: GeometryCheckOptio
     } else if (entry.operation === 'flip' && !legacy) {
       replay = recordFlip(replay);
     } else if (entry.operation === 'mark' && !legacy) {
-      replay = recordMark(replay, entry.move.point);
+      replay = appendMark(replay, entry.move.point, entry.move.sources);
     } else if (entry.operation === 'remove-mark' && !legacy) {
       replay = recordRemoveMark(replay, entry.move.markAttempt);
     } else {
       if (entry.operation !== undefined) throw new Error(`Unknown operation at attempt ${index + 1}.`);
-      replay = appendMove(replay, entry.move, legacy ? 1 : entry.validatorVersion);
+      const attempt = foldAttempt(replay, entry.move, legacy ? 1 : entry.validatorVersion);
+      replay = appendAttempt(replay, {...attempt, ...(diagnostic && {geometryDiagnostic: diagnostic})});
     }
     const actual = replay.attempts[index];
     if ((entry.operation && !matches(actual.move, entry.move)) ||
