@@ -13,8 +13,13 @@ import type { MaterialMark } from './material-points';
 import { facetCreases } from './crease-references';
 import { resolveLineFold, type LineFoldIntent, type LineReference } from './line-constraints';
 import { paperInView, paperTransform, type PaperPose, type PaperState } from './paper-pose';
+import type { GeometryEvidence } from './proof-geometry';
 
-export type Move = StepJson & { readonly packet?: MaterialPacket; readonly intent?: LineFoldIntent };
+export type Move = StepJson & {
+  readonly packet?: MaterialPacket;
+  readonly intent?: LineFoldIntent;
+  readonly geometry?: GeometryEvidence;
+};
 export type { PaperState };
 export type Validation = {
   readonly status: 'accepted' | 'rejected' | 'unverified';
@@ -76,7 +81,8 @@ function parseMove(value: unknown): FoldStep & { readonly packet?: MaterialPacke
       }
     }
   }
-  check(value, ['also', 'label', 'packet', 'intent']);
+  // The experiment checker handles geometric evidence separately from the material model.
+  check(value, ['also', 'label', 'packet', 'intent', 'geometry']);
   const move = value as Move;
   if (Array.isArray(move.also)) {
     for (const part of move.also) check(part, []);

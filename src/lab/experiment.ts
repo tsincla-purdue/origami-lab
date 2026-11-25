@@ -5,6 +5,7 @@ import {
 } from './engine';
 import { materialIntersections } from './material-points';
 import { DEFAULT_PAPER_STYLE, isPaperStyle, type PaperStyle } from './paper-style';
+import { inspectGeometry, type CapturedGeometry, type GeometryCheckOptions, type GeometryReport } from './proof-geometry';
 
 export type Attempt = {
   readonly validation: Validation;
@@ -66,7 +67,23 @@ export function setPaperStyle(experiment: Experiment, paperStyle: PaperStyle): E
 
 /** Record an attempted action. Only an accepted action changes the paper. */
 export function recordMove(experiment: Experiment, move: Move): Experiment {
-  return appendMove(experiment, move);
+  const next = appendMove(experiment, move);
+  if (move.geometry !== undefined) requireGeometry(inspectGeometry(next).at(-1)!, next.attempts.length);
+  return next;
+}
+
+/** Record what the gesture selected independently of the proof result. */
+export function recordGestureMove(experiment: Experiment, move: Move, capture: CapturedGeometry | undefined): Experiment {
+  if (!capture) return recordMove(experiment, move);
+  const geometry = capture.kind === 'freehand' ? {version: 1 as const, ...capture}
+    : {version: 1 as const, ...capture, projection: {axis: move.line, side: move.side}};
+  return appendMove(experiment, {...move, geometry});
+}
+
+function requireGeometry(report: GeometryReport, attempt: number) {
+  if (report.status === 'invalid') {
+    throw new Error(`Geometric evidence at attempt ${attempt}: ${report.detail}`);
+  }
 }
 
 function requireHistorySpace(experiment: Experiment) {
@@ -196,7 +213,7 @@ function matches(expected: unknown, supplied: unknown): boolean {
 }
 
 /** Replay and verify every attempt. Saved snapshots are assertions, never input to the engine. */
-export function importExperiment(text: string): Experiment {
+export function importExperiment(text: string, proofOptions?: GeometryCheckOptions): Experiment {
   if (text.length > MAX_EXPERIMENT_LENGTH) throw new Error('The experiment file is too large.');
   const file = JSON.parse(text) as Partial<Experiment> | null;
   if (!file || file.format !== 'origami-lab' || file.version !== 1) {
@@ -244,5 +261,6 @@ export function importExperiment(text: string): Experiment {
     }
   }
   if (!matches(replay.final, file.final)) throw new Error('The saved final state does not match replay.');
+  inspectGeometry(replay, proofOptions).forEach((report, index) => requireGeometry(report, index + 1));
   return replay;
 }

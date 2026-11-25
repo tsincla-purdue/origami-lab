@@ -5,9 +5,11 @@ import {
 import { currentPolygon } from '../../vendor/origamio/src/paper';
 import { snapTargets } from '../../vendor/origamio/src/snap';
 import { paperInView, type LineReference, type Move, type PaperState } from '../lab';
-import { clipCrease, facetCreases } from '../lab/crease-references';
+import { clipCrease, facetCreaseSegments } from '../lab/crease-references';
 import { materialIntersectionDetails, segmentIntersection, visibleMaterialMarks } from '../lab/material-points';
 import { containsLinePoint } from '../lab/line-constraints';
+import { CORNERS, squareVertices } from '../lab/proof-graph';
+import type { CreaseReference, SelectedLine, SelectedPoint, VertexReference } from '../lab/geometry-intent';
 import { lineKey, pointKey, releaseRadius, selectSnap } from './snap-selection';
 
 export const CORNER_HIT_RADIUS = 22;
@@ -116,16 +118,26 @@ export interface MarkOption {
 /** Stack order decides which projected corner can be picked at a shared screen position. */
 export function paperGeometry(paper: PaperState) {
   const state = paperInView(paper);
-  const faces = [...state.facets].sort((a, b) => b.z - a.z).map(facet => ({
-    facet, poly: orientCCW(currentPolygon(facet)), creases: facetCreases(state, facet),
-  }));
-  const marked = visibleMaterialMarks(state).map(({position}) => position);
+  const faces = [...state.facets].sort((a, b) => b.z - a.z).map(facet => {
+    const world = currentPolygon(facet);
+    return {facet, world, poly: orientCCW(world), creases: facetCreaseSegments(state, facet)};
+  });
+  const marks = visibleMaterialMarks(state);
+  const marked = marks.map(({position}) => position);
   const corners: Vec[] = [];
-  for (const [index, {poly}] of faces.entries()) {
+  const vertexRefs = new Map<Vec, VertexReference>();
+  for (const [index, {poly, facet, world}] of faces.entries()) {
     const above = faces.slice(0, index);
     for (const point of poly) {
       const covered = above.some(face => location(face.poly, point));
-      if (!covered && !corners.some(corner => distance(corner, point) <= EPS)) corners.push(point);
+      if (covered || corners.some(corner => distance(corner, point) <= EPS)) continue;
+      corners.push(point);
+      const material = facet.poly[world.indexOf(point)];
+      const corner = CORNERS.find(name => {
+        const [x, y] = squareVertices[name];
+        return material.x === x && material.y === y;
+      });
+      if (corner) vertexRefs.set(point, {facetId: facet.id, corner});
     }
   }
   const hit = (point: Vec) => {
@@ -138,23 +150,47 @@ export function paperGeometry(paper: PaperState) {
     !faces.slice(0, layer).some(({poly}) => location(poly, point) === 'inside');
   const edges = faces.flatMap(({poly}, layer) =>
     poly.map((a, i) => ({line: {a, b: poly[(i + 1) % poly.length]}, layer})));
-  const creaseLines = faces.flatMap(({creases}, layer) => creases.map(line => ({line, layer})));
+  const creaseLines = faces.flatMap(({creases}, layer) => creases.map(({line, index}) => ({line, layer, index})));
   // Keep the original per-layer search order so equal-distance O5 targets stay stable.
-  const lines = [...creaseLines, ...edges].sort((a, b) => a.layer - b.layer);
+  const lines: {line: Line; layer: number; index?: number}[] = [...creaseLines, ...edges].sort((a, b) => a.layer - b.layer);
   let references: Vec[] | undefined;
   let exposed: LineReference[] | undefined;
+  const creaseRefs = new WeakMap<LineReference, CreaseReference>();
+  function lineReference(line: Line, layer: number, index: number | undefined): LineReference {
+    const facetId = faces[layer].facet.id;
+    const reference = {line, facetId};
+    if (index !== undefined) creaseRefs.set(reference, {facetId, crease: index});
+    return reference;
+  }
   function grabLines(): readonly LineReference[] {
-    return exposed ??= lines.flatMap(({line, layer}) => {
+    return exposed ??= lines.flatMap(({line, layer, index}) => {
       let segments = distance(line.a, line.b) > EPS ? [line] : [];
       for (let upper = 0; upper < layer && segments.length; upper++) {
         segments = segments.flatMap(segment => subtractCover(segment, faces[upper].poly));
       }
-      return segments.map(line => ({line, facetId: faces[layer].facet.id}));
+      return segments.map(segment => lineReference(segment, layer, index));
     });
+  }
+  function pointReference(point: Vec, facetId?: number): SelectedPoint {
+    const vertex = vertexRefs.get(point);
+    const mark = marks.find(({position}) => position === point);
+    const face = faces.find(({facet, poly}) =>
+      (facetId ?? vertex?.facetId ?? facet.id) === facet.id && location(poly, point) &&
+      (!mark || location(orientCCW(facet.poly), mark.point)));
+    if (!face) return {point};
+    const corner = vertex?.facetId === face.facet.id ? vertex.corner : undefined;
+    const material = corner ? {x: squareVertices[corner][0], y: squareVertices[corner][1]}
+      : mark?.point ?? apply(invert(face.facet.transform), point);
+    return {point, material: {facetId: face.facet.id, point: material,
+      ...(corner && {corner}), ...(mark && {markId: mark.id})}};
   }
   return {
     corners,
     marked,
+    vertexReference: (point: Vec) => vertexRefs.get(point),
+    creaseReference: (reference: LineReference) => creaseRefs.get(reference),
+    lineReference: (reference: LineReference): SelectedLine => ({...reference, ...creaseRefs.get(reference)}),
+    pointReference,
     contains: (point: Vec) => hit(point) !== undefined,
     markOptions(screen: Vec, transform: Mat, radius: number, locked?: MarkOption): MarkOption[] {
       const world = apply(invert(transform), screen);
@@ -187,7 +223,7 @@ export function paperGeometry(paper: PaperState) {
       const { minX, maxX, minY, maxY } = bounds(faces.flatMap(({poly}) => poly));
       const center = scale(add({ x: minX, y: minY }, { x: maxX, y: maxY }), 0.5);
       const targets = snapTargets(state).points.filter(({kind, point}) => kind !== 'vertex' && hit(point) === 'edge');
-      const endpoints = faces.flatMap(({creases}, layer) => creases.flatMap(({a, b}) =>
+      const endpoints = faces.flatMap(({creases}, layer) => creases.flatMap(({line: {a, b}}) =>
         [a, b, scale(add(a, b), .5)].filter(point => visibleAt(point, layer))));
       return [...marked, ...corners, ...targets.map(({point}) => point), ...endpoints, center];
     },
@@ -228,7 +264,7 @@ export function paperGeometry(paper: PaperState) {
           ({layer}, point) => visibleAt(point, layer));
         if (!hit) return [];
         return [{key: `pin/${reference.layer}/${lineKey(reference.line)}`,
-          score: distance(screen, apply(transform, hit.point)), value: reference.line}];
+          score: distance(screen, apply(transform, hit.point)), value: lineReference(reference.line, reference.layer, reference.index)}];
       });
     },
   };

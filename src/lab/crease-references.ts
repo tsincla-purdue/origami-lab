@@ -22,8 +22,12 @@ export function clipCrease(segment: Line, material: Polygon): Line | undefined {
 }
 
 export function facetCreases(state: PaperState, facet: Facet): Line[] {
-  return state.creases.flatMap(crease => {
+  return facetCreaseSegments(state, facet).map(({line}) => line);
+}
+
+export function facetCreaseSegments(state: PaperState, facet: Facet) {
+  return state.creases.flatMap((crease, index) => {
     const clipped = clipCrease(crease, facet.poly);
-    return clipped ? [applyToLine(facet.transform, clipped)] : [];
+    return clipped ? [{line: applyToLine(facet.transform, clipped), index}] : [];
   });
 }
