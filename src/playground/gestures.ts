@@ -6,6 +6,7 @@ import {
   type ConstraintResult, type ConstraintSolution, type LineFoldIntent, type LineReference, type MaterialPacket, type PaperState,
 } from '../lab';
 import { packetHingeLanding } from '../lab/packets';
+import type { CapturedGeometry } from '../lab/proof-geometry';
 import { creasePairs, drawnMarkCandidates, sameAxis } from './crease-snap';
 import { lineKey, pointKey, releaseRadius, selectSnap, snapRadius, type SnapCandidate } from './snap-selection';
 import {
@@ -29,6 +30,7 @@ export interface Draft {
   readonly source?: Line;
   readonly snapLabel?: string;
   readonly alternatives?: readonly Draft[];
+  readonly capture?: CapturedGeometry;
 }
 
 export interface ConstraintIssue {
@@ -187,6 +189,18 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
       constraint: {target: targetLine, solutions: result.solutions, index}};
   }
 
+  function pinnedDraft(reference: LineReference, anchor: Vec, target: Vec, map: Mat, fixed: Vec) {
+    const result = solvePointOntoLine(fixed, anchor, reference.line, true);
+    const draft = constrainedDraft(result, anchor, target, map, reference.line);
+    if (!draft || !geometry) return draft;
+    const pin = geometry.vertexReference(fixed);
+    const moving = geometry.vertexReference(anchor);
+    const crease = geometry.creaseReference(reference);
+    // The supported finite construction has exactly one branch. Other solves keep their numerical choices.
+    if (!pin || !moving || !crease || result.solutions.length !== 1 || draft.destination.y <= fixed.y) return draft;
+    return {...draft, capture: {kind: 'equilateral-o5', pin, moving, target: crease, branch: 'above-pin'} as const};
+  }
+
   function previewSnap(options: readonly SnapCandidate<Draft>[], radius: number, press: Drag): Draft | undefined {
     const [primary, ...nearby] = selectSnap(options, radius, press.snapKey);
     press.snapKey = primary?.key;
@@ -213,7 +227,10 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
       const source = press.source?.line;
       const snapLabel = source ? 'Grabbed point onto mark'
         : geometry?.marked.includes(destination) ? 'Point onto mark' : undefined;
-      const value: Draft = {...fold, tool, anchor: press.anchor, destination, snapped: [destination], source, snapLabel, ...material()};
+      const moving = geometry?.vertexReference(press.anchor);
+      const vertex = geometry?.vertexReference(destination);
+      const capture = moving && vertex ? {kind: 'vertex-bisector', moving, target: vertex} as const : undefined;
+      const value: Draft = {...fold, tool, anchor: press.anchor, destination, snapped: [destination], source, snapLabel, capture, ...material()};
       return [{key: `point/${pointKey(destination)}`, score, value}];
     });
   }
@@ -270,7 +287,11 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
       const pointSource = nearestSupportingLine(drag.pointSources, target, map, reach);
       if (pointSource) {
         const lineIntent: LineFoldIntent = {kind: 'perpendicular-point', source: pointSource, moving: anchor, pin};
-        return constrainedDraft(resolveLineFold(lineIntent), anchor, target, map, pointSource.line, lineIntent);
+        const draft = constrainedDraft(resolveLineFold(lineIntent), anchor, target, map, pointSource.line, lineIntent);
+        const source = geometry.creaseReference(pointSource);
+        const vertex = geometry.vertexReference(pin);
+        return draft && source && vertex
+          ? {...draft, capture: {kind: 'perpendicular-through', pin: vertex, source}} : draft;
       }
       if (!nearby) {
         drag.snapKey = undefined;
@@ -279,11 +300,11 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
       }
       drag.snapKey = nearby.key;
       const fixed = pin;
-      const primary = constrainedDraft(solvePointOntoLine(fixed, anchor, nearby.value, true), anchor, target, map, nearby.value);
+      const primary = pinnedDraft(nearby.value, anchor, target, map, fixed);
       if (!primary) return;
       const alternatives = choices.slice(1).flatMap(({value}) => {
-        if (sameAxis(nearby.value, value)) return [];
-        const draft = constrainedDraft(solvePointOntoLine(fixed, anchor, value, true), anchor, target, map, value);
+        if (sameAxis(nearby.value.line, value.line)) return [];
+        const draft = pinnedDraft(value, anchor, target, map, fixed);
         return draft ? [draft] : [];
       });
       issue = undefined;
@@ -306,7 +327,7 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
         const snapped = previewSnap(candidates, magnet, drag);
         if (snapped) return snapped;
       }
-      return fold && {...fold, tool, anchor, destination, snapped: [], ...material()};
+      return fold && {...fold, tool, anchor, destination, snapped: [], capture: {kind: 'freehand'}, ...material()};
     }
     const raw = {a: drag.rawAnchor, b: destination};
     if (distance(raw.a, raw.b) <= EPS) return;
@@ -322,7 +343,7 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
       const end = snap(target, map, event) ?? raw.b;
       if (distance(start, end) > EPS) return {line: {a: start, b: end}, tool, anchor: start, destination: end, snapped: []};
     }
-    return {line: raw, tool, anchor: raw.a, destination, snapped: []};
+    return {line: raw, tool, anchor: raw.a, destination, snapped: [], capture: {kind: 'freehand'}};
   }
 
   svg.addEventListener('pointerdown', event => {

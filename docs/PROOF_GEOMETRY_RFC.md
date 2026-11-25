@@ -54,7 +54,8 @@ type Geometry =
                                   side: 1 | -1 } } & Rule);
 ```
 
-A later rule can name other initial edges, exact midpoint/intersection
+A later rule can name initial edges such as `square:AB` as a line through
+`square:A` and `square:B`, exact midpoint/intersection
 references, through-two-points, or a chosen reflection branch. For a conditional
 claim, an explicit node such as
 `{id:"step:8:axis", rule:"assume-line", parameter:"step:8:freehand", value:[[0,0.4],[1,0.41]]}`
@@ -81,8 +82,8 @@ coincidence.
 Nodes are small constructor applications. For example
 
 ```json
-{"id":"step:3:landing","rule":"equilateral-apex","pin":"square:A","moving":"square:B","target":"step:1:axis","branch":"above-pin"}
-{"id":"step:4:axis","rule":"perpendicular-through","point":"step:3:landing","line":"step:1:axis"}
+{"id":"step:3:landing","kind":"equilateral-apex","pin":"square:A","moving":"square:B","target":"step:1:axis","branch":"above-pin"}
+{"id":"step:4:axis","kind":"perpendicular","point":"step:3:landing","line":"step:1:axis"}
 ```
 
 Use dyadic rational arithmetic with BigInt coefficients in
@@ -126,6 +127,30 @@ Use the synthetic unit-square construction with `A=(0,0)`, `B=(1,0)`,
    `H=perpendicularThrough(T,L)`. Its exact direction is horizontal and
    its origin is T. A certificate reports the dependencies on the chosen
    O5 branch and the retained center crease.
+
+The fourth move's exported `geometry` claim binds the chosen material
+references and the numerical projection of the axis.
+
+```json
+{
+  "version": 1,
+  "kind": "perpendicular-through",
+  "pin": { "facetId": 2, "corner": "B" },
+  "source": { "facetId": 0, "crease": 0 },
+  "projection": {
+    "axis": [[0.5, 0.8660254037844382], [1.5, 0.8660254037844382]],
+    "side": 1
+  }
+}
+```
+
+**Folding history → Geometric provenance** shows the **Certified** report
+and the dependency IDs
+`step:3:landing` and `step:1:axis`. The headless `inspectGeometry` function
+returns the same report for each step of an imported experiment. In the
+browser regression, dragging the upper-left vertex to approximately
+`(0.00131, 0.73066)` with snapping disabled instead records a distinct,
+approximately 0.005-slope fold and shows **Near match**.
 
 The approximately `(0,0.8653300277) → (1,0.8702805227)` line is tilted;
 a bare legacy `Point drag` does not record a geometric reference. Neither

@@ -1137,6 +1137,68 @@ test('pointer-only hold and drag commits the unique equilateral landing on relea
   await expect(page.locator('.paper-reference')).toHaveAttribute('x1', '0.5');
 });
 
+test('synthetic equilateral gestures distinguish a certified horizontal from a close freehand axis', async ({page}) => {
+  const unfold = page.getByRole('button', {name: 'Unfold', exact: true});
+  const pinAt = async (x, y) => {
+    const pin = await screenPoint(page, x, y);
+    await page.mouse.move(pin.x, pin.y);
+    await page.mouse.down();
+    await expect(page.locator('.pin-anchor')).toBeVisible({timeout: 2000});
+    await page.mouse.up();
+  };
+
+  await dragCorner(page, [1, 0], [0, 0]);
+  await unfold.click();
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await pinAt(0, 0);
+  await dragCorner(page, [1, 0], [.52, .79]);
+  await expect(page.locator('#history li').last()).toContainText('Point onto line');
+
+  const height = Math.sqrt(3) / 2;
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await pinAt(.5, height);
+  await startMouseDrag(page, [.5, 1], [.5, 2 * height - 1]);
+  await expect(page.locator('.constraint-source')).toHaveAttribute('x1', '0.5');
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  await page.mouse.up();
+  await expect(page.locator('#history li').last()).toContainText('Perpendicular through point');
+
+  await page.getByText('Geometric provenance', {exact: true}).click();
+  const report = page.locator('#geometry-report');
+  await expect(report).toHaveText('Certified. Horizontal through the certified apex at y = √3/2.');
+  await expect(page.locator('#geometry-dependencies')).toHaveText('References · step:3:landing, step:1:axis');
+  const certified = await downloadJSON(page, 'Export experiment');
+  expect(certified.attempts.map(({move}) => move.geometry?.kind))
+    .toEqual(['vertex-bisector', undefined, 'equilateral-o5', 'perpendicular-through']);
+  expect(certified.attempts[2].move.geometry).toMatchObject({branch: 'above-pin', target: {facetId: 0, crease: 0}});
+  const horizontal = certified.attempts.at(-1);
+  expect(horizontal.move.geometry).toMatchObject({pin: {corner: 'B'}, source: {facetId: 0, crease: 0}});
+  expect(horizontal.validation.status).toBe('accepted');
+  for (const [, y] of horizontal.move.line) expect(y).toBeCloseTo(height, 12);
+  expect(certified.final.creases.length).toBeGreaterThan(certified.attempts[2].state.creases.length);
+  await verifyReplayAndUndo(page, certified);
+
+  // A synthetic close call modeled on the reported tilted Point drag.
+  await page.getByLabel('Snap to points').uncheck();
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await dragCorner(page, [0, 1], [.00131, .73066]);
+  await expect(page.locator('#history li').last()).toContainText('Point drag');
+  await page.getByText('Geometric provenance', {exact: true}).click();
+  await expect(report).toHaveText('Near match. Freehand axis is near the horizontal through the certified apex.');
+  const near = await downloadJSON(page, 'Export experiment');
+  const {move, validation} = near.attempts.at(-1);
+  expect(validation.status).toBe('accepted');
+  expect(move.geometry).toEqual({version: 1, kind: 'freehand'});
+  const [[ax, ay], [bx, by]] = move.line;
+  expect((by - ay) / (bx - ax)).toBeCloseTo(.005, 3);
+
+  await page.reload();
+  await importJSON(page, near);
+  await page.getByText('Geometric provenance', {exact: true}).click();
+  await expect(report).toContainText('Near match');
+  expect(await downloadJSON(page, 'Export experiment')).toEqual(near);
+});
+
 test('unfolds a snapped fold over an O5 flap and then unfolds the O5 fold', async ({page}) => {
   const unfold = page.getByRole('button', {name: 'Unfold', exact: true});
   await dragCorner(page, [1, 0], [0, 0]);

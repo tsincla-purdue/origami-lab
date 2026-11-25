@@ -8,7 +8,8 @@ import {
   serializeExperiment, setPaperStyle, stateAt, undoMove, validate,
 } from './lab';
 import type { Experiment, Move, PaperStyle, Validation } from './lab';
-import { MAX_EXPERIMENT_LENGTH } from './lab/experiment';
+import { MAX_EXPERIMENT_LENGTH, recordGestureMove } from './lab/experiment';
+import { inspectGeometry, type CapturedGeometry, type GeometryReport } from './lab/proof-geometry';
 import { connectGestures, type ConstraintIssue, type CornerSelection, type Draft, type Tool } from './playground/gestures';
 import { interpretDraft, type Interpretation } from './playground/intent';
 import {
@@ -55,6 +56,8 @@ function rememberStyle(style: PaperStyle) {
 }
 
 let experiment = createExperiment(savedStyle());
+let inspected: Experiment | undefined;
+let geometryReports: readonly GeometryReport[] = [];
 let cursor = 0;
 let creaseView = false;
 let moves: Move[] = [];
@@ -256,7 +259,7 @@ function clearGesture() {
 function finishDraft() {
   const option = picked();
   if (editable() && pending && gestures.canConfirm(pending) && option?.result.validation.status === 'accepted') {
-    commitMove(option.move);
+    commitMove(option.move, option.draft.capture);
   }
 }
 
@@ -376,6 +379,19 @@ function renderHistory() {
   if (active.offsetTop + active.offsetHeight > history.scrollTop + history.clientHeight) {
     history.scrollTop = active.offsetTop + active.offsetHeight - history.clientHeight;
   }
+  const entry = experiment.attempts[cursor - 1];
+  const details = get<HTMLDetailsElement>('geometry-proof');
+  details.hidden = !entry || Boolean(entry.operation);
+  if (details.hidden) return;
+  if (inspected !== experiment) {
+    geometryReports = inspectGeometry(experiment);
+    inspected = experiment;
+  }
+  const {status, detail, dependencies} = geometryReports[cursor - 1];
+  const label = status === 'certified' ? 'Certified' : status === 'near-match' ? 'Near match'
+    : status === 'inconclusive' ? 'Inconclusive' : 'Unverified';
+  get('geometry-report').textContent = `${label}. ${detail}`;
+  get('geometry-dependencies').textContent = dependencies.length ? `References · ${dependencies.join(', ')}` : '';
 }
 
 function render() {
@@ -419,10 +435,10 @@ function download(filename: string, content: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function commitMove(move: Move) {
+function commitMove(move: Move, capture?: CapturedGeometry) {
   if (!atTip()) return;
   try {
-    experiment = recordMove(experiment, move);
+    experiment = capture ? recordGestureMove(experiment, move, capture) : recordMove(experiment, move);
     cursor = experiment.attempts.length;
     clearGesture();
     notify();

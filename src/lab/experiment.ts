@@ -5,6 +5,7 @@ import {
 } from './engine';
 import { materialIntersections } from './material-points';
 import { DEFAULT_PAPER_STYLE, isPaperStyle, type PaperStyle } from './paper-style';
+import { inspectGeometry, type CapturedGeometry, type GeometryReport } from './proof-geometry';
 
 export type Attempt = {
   readonly validation: Validation;
@@ -66,7 +67,26 @@ export function setPaperStyle(experiment: Experiment, paperStyle: PaperStyle): E
 
 /** Record an attempted action. Only an accepted action changes the paper. */
 export function recordMove(experiment: Experiment, move: Move): Experiment {
-  return appendMove(experiment, move);
+  const next = appendMove(experiment, move);
+  if (move.geometry !== undefined) requireGeometry(inspectGeometry(next).at(-1)!, next.attempts.length);
+  return next;
+}
+
+/** Capture supported constraints without changing how ordinary gestures fold. */
+export function recordGestureMove(experiment: Experiment, move: Move, capture: CapturedGeometry | undefined): Experiment {
+  if (!capture) return recordMove(experiment, move);
+  const geometry = capture.kind === 'freehand' ? {version: 1 as const, ...capture}
+    : {version: 1 as const, ...capture, projection: {axis: move.line, side: move.side}};
+  const annotated = appendMove(experiment, {...move, geometry});
+  if (capture.kind === 'freehand' || inspectGeometry(annotated).at(-1)?.status === 'certified') return annotated;
+  // The selected constraint falls outside the slice. Keep its original numerical motion.
+  return recordMove(experiment, move);
+}
+
+function requireGeometry(report: GeometryReport, attempt: number) {
+  if (report.status === 'invalid' || report.status === 'inconclusive') {
+    throw new Error(`Geometric evidence at attempt ${attempt}: ${report.detail}`);
+  }
 }
 
 function requireHistorySpace(experiment: Experiment) {
@@ -244,5 +264,6 @@ export function importExperiment(text: string): Experiment {
     }
   }
   if (!matches(replay.final, file.final)) throw new Error('The saved final state does not match replay.');
+  inspectGeometry(replay).forEach((report, index) => requireGeometry(report, index + 1));
   return replay;
 }
