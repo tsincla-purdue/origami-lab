@@ -263,7 +263,12 @@ function finishDraft() {
 function settleDraft(draft: Draft) {
   const verdict = picked()?.result.validation;
   if (verdict?.status === 'accepted') {
-    if (!draft.alternatives?.length && interpretations.length === 1 && !(draft.constraint && gestures.pinNeedsConfirmation())) finishDraft();
+    const edgeSnap = draft.source || draft.lineIntent?.kind === 'align-lines';
+    // An invalid rival need not hold up an accepted edge snap. A failed suggestion still stays visible.
+    const unambiguous = edgeSnap
+      ? interpretations.filter(option => option.result.validation.status === 'accepted').length === 1
+      : !draft.alternatives?.length && interpretations.length === 1;
+    if (unambiguous && !(draft.constraint && gestures.pinNeedsConfirmation())) finishDraft();
   } else if (!draft.constraint && !draft.alternatives?.length) {
     gestureFeedback = verdict;
     gestures.cancel();

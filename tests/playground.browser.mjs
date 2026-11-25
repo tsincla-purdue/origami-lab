@@ -143,6 +143,139 @@ async function scoreHorizontalMarks(page, both = false) {
   return y;
 }
 
+async function scoreIntersectingCreases(page) {
+  const unfold = page.getByRole('button', {name: 'Unfold', exact: true});
+  await page.getByLabel('Snap to points').uncheck();
+  for (const [from, to] of [[[0, 0], [0, .82]], [[0, 0], [.4, 0]], [[1, 0], [.24, 0]]]) {
+    await page.locator('#paper').scrollIntoViewIfNeeded();
+    await dragCorner(page, from, to);
+    await unfold.click();
+  }
+  const {final: {creases: [horizontal, left, right]}} = await downloadJSON(page, 'Export experiment');
+  return [left, right].map(crease => [crease.a.x, horizontal.a.y]);
+}
+
+test('a straight edge drag aligns to a crease with marked intersections without confirmation', async ({page}) => {
+  const points = await scoreIntersectingCreases(page);
+  await page.getByLabel('Snap to points').check();
+  for (const point of [[0, points[0][1]], ...points]) {
+    await page.locator('#paper').scrollIntoViewIfNeeded();
+    await tapCorner(page, point, 3);
+    await page.getByRole('button', {name: 'Mark point', exact: true}).click();
+  }
+  const [x, y] = points[1];
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  const scale = (await screenPoint(page, 1, 0)).x - (await screenPoint(page, 0, 0)).x;
+  const grab = x - 8 / scale;
+  await startMouseDrag(page, [grab, 0], [grab, y]);
+  await expect(page.locator('.constraint-target')).toHaveCount(1);
+  await expect(page.locator('.packet-moving')).toHaveCount(1);
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  await page.mouse.up();
+  await expect(page.getByRole('button', {name: 'Confirm fold', exact: true})).toBeHidden();
+  const file = await downloadJSON(page, 'Export experiment');
+  expect(file.final.marks).toHaveLength(3);
+  const {move, validation} = file.attempts.at(-1);
+  expect(validation.status).toBe('accepted');
+  expect(move.intent).toMatchObject({kind: 'align-lines', target: {facetId: 0}});
+  for (const [, creaseY] of move.line) expect(creaseY).toBeCloseTo(y / 2, 12);
+  const {a, b, e, f} = file.final.facets.at(-1).transform;
+  expect(a * grab + e).toBeCloseTo(grab, 12);
+  expect(b * grab + f).toBeCloseTo(y, 12);
+});
+
+test('edge alignment holds through jitter and offers a competing marked-point fold', async ({page}) => {
+  const points = await scoreIntersectingCreases(page);
+  await page.getByLabel('Snap to points').check();
+  for (const point of points) {
+    await page.locator('#paper').scrollIntoViewIfNeeded();
+    await tapCorner(page, point, 3);
+    await page.getByRole('button', {name: 'Mark point', exact: true}).click();
+  }
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  const [x, y] = points[1];
+  const mark = await screenPoint(page, x, y);
+  const scale = (await screenPoint(page, 1, 0)).x - (await screenPoint(page, 0, 0)).x;
+
+  // A diagonal drag from farther along the edge clearly aims for the mark.
+  await startMouseDrag(page, [x - 36 / scale, 0], [x, y]);
+  await expect(page.locator('#gesture-reason')).toContainText('Grabbed point onto mark');
+  await expect(page.locator('.constraint-target')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
+
+  // Acquire the crease with a straight drag, then move close enough to the mark that both fit.
+  const grab = x - 14 / scale;
+  await startMouseDrag(page, [grab, 0], [grab, y]);
+  await expect(page.locator('.constraint-target')).toHaveCount(1);
+  await page.mouse.move(mark.x - 3, mark.y);
+  await expect(page.locator('.constraint-target')).toHaveCount(1);
+  await page.mouse.up();
+  const choice = page.getByRole('combobox', {name: 'Snap target'});
+  await expect(choice.locator('option')).toHaveCount(2);
+  await expect(choice.locator('option:checked')).toContainText('Align lines');
+  await expect(choice.locator('option').nth(1)).toContainText('Grabbed point onto mark');
+  await choice.selectOption({index: 1});
+  await expect(page.locator('.drag-destination')).toHaveAttribute('cx', String(x));
+  await expect(page.locator('.drag-destination')).toHaveAttribute('cy', String(y));
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  await expect(page.locator('.packet-moving')).toHaveCount(1);
+  await choice.selectOption({index: 0});
+  await expect(page.locator('.constraint-target')).toHaveCount(1);
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  await choice.selectOption({index: 1});
+  const anchor = Number(await page.locator('.drag-anchor').getAttribute('cx'));
+  await page.getByRole('button', {name: 'Confirm fold', exact: true}).click();
+  const file = await downloadJSON(page, 'Export experiment');
+  expect(file.attempts.at(-1)).toMatchObject({move: {label: 'Grabbed point onto mark'}, validation: {status: 'accepted'}});
+  const {a, b, e, f} = file.final.facets.at(-1).transform;
+  expect(a * anchor + e).toBeCloseTo(x, 12);
+  expect(b * anchor + f).toBeCloseTo(y, 12);
+  await verifyReplayAndUndo(page, file);
+});
+
+test('marks exact intersections with snapping off and snaps to the retained mark after turnover', async ({page}) => {
+  const [, [x, y]] = await scoreIntersectingCreases(page);
+  const snap = page.getByLabel('Snap to points');
+  await expect(snap).not.toBeChecked();
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await page.keyboard.down('Alt');
+  await startMouseDrag(page, [1, 0], [x - .013, y + .012]);
+  await expect(page.locator('.preview-line')).toHaveCount(1);
+  await expect(page.locator('.snap-active,.crease-snap-reference')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
+  await page.keyboard.up('Alt');
+
+  const mark = await screenPoint(page, x, y);
+  await page.mouse.move(mark.x + 5, mark.y - 4);
+  await expect(page.locator('.intersection-ghost')).toHaveAttribute('cx', String(x));
+  await expect(page.locator('.intersection-ghost')).toHaveAttribute('cy', String(y));
+  await expect(page.locator('.intersection-reference')).toHaveCount(2);
+  await page.mouse.click(mark.x + 5, mark.y - 4);
+  await page.getByRole('button', {name: 'Mark point', exact: true}).click();
+  const marked = await downloadJSON(page, 'Export experiment');
+  expect(marked.final.marks[0].point).toEqual({x, y});
+
+  await page.getByRole('button', {name: 'Flip over', exact: true}).click();
+  await snap.check();
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  const displayed = page.locator('#paper-marks .material-mark');
+  await expect(displayed).toHaveAttribute('cx', String(1 - x));
+  await startMouseDrag(page, [1, 0], [1 - x + .013, y + .012]);
+  await expect(page.locator('#gesture-reason')).toContainText('Point onto mark');
+  await expect(page.locator('.drag-destination')).toHaveAttribute('cx', String(1 - x));
+  await expect(page.locator('.drag-destination')).toHaveAttribute('cy', String(y));
+  await page.mouse.up();
+  await page.getByRole('button', {name: 'Unfold', exact: true}).click();
+  await expect(displayed).toHaveAttribute('cx', String(1 - x));
+  const file = await downloadJSON(page, 'Export experiment');
+  expect(file.attempts.at(-2)).toMatchObject({move: {label: 'Point onto mark'}, validation: {status: 'accepted'}});
+  expect(file.final.marks).toEqual(marked.final.marks);
+  expect(file.final.creases.slice(0, 3)).toEqual(marked.final.creases);
+  await verifyReplayAndUndo(page, file);
+});
+
 test('transfers an edge grab onto an exact marked apex and releases the target with Alt', async ({page}) => {
   const y = await scoreHorizontalMarks(page);
   await page.locator('#paper').scrollIntoViewIfNeeded();

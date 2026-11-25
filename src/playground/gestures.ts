@@ -191,12 +191,17 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
     const [primary, ...nearby] = selectSnap(options, radius, press.snapKey);
     press.snapKey = primary?.key;
     if (!primary) return;
-    const distinct: Draft[] = [primary.value];
-    for (const {value} of nearby) {
-      const material = (draft: Draft) => draft.lineIntent?.kind === 'align-lines' ? draft.lineIntent.target.facetId : undefined;
-      if (!distinct.some(other => material(value) === material(other) && sameAxis(value.line, other.line))) distinct.push(value);
+    const candidates = [primary, ...nearby];
+    const distinct: Draft[] = [];
+    const targetFacet = (draft: Draft) => draft.lineIntent?.kind === 'align-lines' ? draft.lineIntent.target.facetId : undefined;
+    for (const {value} of candidates) {
+      // The same motion may hit a mark and align its line. Keep the alignment's material reference.
+      const alignment = value.source && candidates.find(({value: option}) =>
+        option.lineIntent?.kind === 'align-lines' && sameAxis(value.line, option.line));
+      const draft = alignment ? alignment.value : value;
+      if (!distinct.some(other => targetFacet(draft) === targetFacet(other) && sameAxis(draft.line, other.line))) distinct.push(draft);
     }
-    return distinct.length > 1 ? {...primary.value, alternatives: distinct.slice(1)} : primary.value;
+    return distinct.length > 1 ? {...distinct[0], alternatives: distinct.slice(1)} : distinct[0];
   }
 
   function pointDrafts(press: Drag, target: Vec, map: Mat, points: readonly Vec[], radius: number) {
@@ -235,26 +240,24 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
           issue = {source: source.line, reason: 'Enable snapping to align an edge or bring its grabbed point onto a mark.'};
           return;
         }
-        const marked = previewSnap(pointDrafts(drag, target, map, geometry.marked, magnet), magnet,
-          // Only an in-range mark can deliberately replace an edge alignment.
-          drag.snapKey?.startsWith('point/') ? drag : {...drag, snapKey: undefined});
-        if (marked) {
-          drag.snapKey = `point/${pointKey(marked.destination)}`;
-          return marked;
-        }
-        const options = geometry.grabLines().flatMap(reference => {
+        const lines = geometry.grabLines().flatMap(reference => {
           if (reference === source || sameAxis(source.line, reference.line)) return [];
           const hit = nearestLine([reference], target, map, releaseRadius(magnet));
           if (!hit) return [];
           const intent: LineFoldIntent = {kind: 'align-lines', source, moving: anchor, target: reference};
           const value = constrainedDraft(resolveLineFold(intent), anchor, target, map, reference.line, intent);
-          return value ? [{key: `line/${reference.facetId}/${lineKey(reference.line)}`,
-            score: distance(target, apply(map, hit.point)), value}] : [];
+          if (!value) return [];
+          const lineGap = distance(target, apply(map, hit.point));
+          const landingGap = distance(target, apply(map, value.destination));
+          // The reflected grab gives the expected drag direction. Allow more leeway along a line than toward a point.
+          const score = Math.max(lineGap, landingGap / 2);
+          return [{key: `line/${reference.facetId}/${lineKey(reference.line)}`, score, value}];
         });
-        const alignment = previewSnap(options, magnet, drag);
-        if (alignment) issue = undefined;
+        const points = pointDrafts(drag, target, map, geometry.marked, magnet);
+        const snapped = previewSnap([...lines, ...points], magnet, drag);
+        if (snapped) issue = undefined;
         else issue ??= {source: source.line, reason: 'Drag toward a visible line or marked point.'};
-        return alignment;
+        return snapped;
       }
       const lineIntent: LineFoldIntent = {kind: 'perpendicular', source, moving: anchor, pin};
       return constrainedDraft(resolveLineFold(lineIntent), anchor, target, map, source.line, lineIntent);
@@ -372,7 +375,7 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
       held = undefined;
       issue = undefined;
       offeredMarks = [];
-      ghost = callbacks.snapping() && !event.altKey ? geometry.markOptions(start, map, snapRadius(event.pointerType), ghost)[0] : undefined;
+      ghost = geometry.markOptions(start, map, snapRadius(event.pointerType), ghost)[0];
       const press = drag;
       press.holdTimer = window.setTimeout(() => {
         if (drag !== press || press.moved) return;
@@ -408,7 +411,7 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
       } else if (tool === 'corner' && event.pointerType !== 'touch') {
         const map = transform();
         if (map && geometry) {
-          ghost = !held && !offeredMarks.length && callbacks.snapping() && !event.altKey
+          ghost = !held && !offeredMarks.length
             ? geometry.markOptions(client(event), map, snapRadius(event.pointerType), ghost)[0] : undefined;
           callbacks.show(held, nearestPoint(geometry.corners, client(event), map, CORNER_HIT_RADIUS), issue);
         }
@@ -436,7 +439,7 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
           chooseCorner(anchor);
           cycle(event.timeStamp);
           const map = transform();
-          if (map && geometry && callbacks.snapping() && !event.altKey) {
+          if (map && geometry) {
             offeredMarks = geometry.markOptions(client(event), map, snapRadius(event.pointerType), ghost);
           }
           ghost = undefined;
