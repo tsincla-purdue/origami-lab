@@ -4,8 +4,7 @@
 
 A fold attempt still records the physical model's verdict and resulting material
 state. Captured intent records the references and relationship the user chose.
-A geometric report checks that intent. An
-exact planar relation can be certified even when the model refuses the motion.
+A geometric report checks that intent. An exact planar relation can be certified even when the model refuses the motion.
 An accepted motion supplies no evidence of which geometric target was chosen.
 The independent numerical and material audit in [SOUNDNESS.md](SOUNDNESS.md)
 continues to run.
@@ -13,7 +12,7 @@ continues to run.
 | Report | Meaning |
 | --- | --- |
 | Certified | The selected references and branch establish the stated exact relationship. |
-| Conditional | The relationship follows from named, unproved parameters. Reserved for explicit assumptions in a later slice. |
+| Conditional | The relationship follows from named material-line assumptions. |
 | Near match | A recorded freehand axis lies near an independently computed reference. The report names the comparison and makes no claim about the user's intent. |
 | Unverified | References were absent, ambiguous, unsupported, or depended on an unproved construction. |
 | Inconclusive | The checker exhausted its arithmetic or graph budget, or the projection could not be bound reliably. |
@@ -48,7 +47,7 @@ type Vertex = { facetId: number; corner: 'A' | 'B' | 'C' | 'D' };
 type Crease = { facetId: number; crease: number }; // zero-based material crease index
 type Point = { x: number; y: number };
 type SelectedPoint = { point: Point; material?: {
-  facetId: number; point: Point; corner?: Vertex['corner']; markId?: number;
+  facetId: number; point: Point; corner?: Vertex['corner']; markId?: number; edgeMidpoint?: number;
 } };
 type SelectedLine = { facetId: number; line: { a: Point; b: Point }; crease?: number };
 type Intent =
@@ -60,6 +59,8 @@ type Intent =
       landing: Point; branch: 'before-foot' | 'at-foot' | 'after-foot' }
   | { kind: 'point-to-point'; moving: SelectedPoint; target: SelectedPoint }
   | { kind: 'through-points'; points: SelectedPoint[] }
+  | { kind: 'marked-perpendicular'; moving: SelectedPoint; through: SelectedPoint;
+      source: SelectedLine; landing: Point }
   | { kind: 'line-fold'; source: SelectedLine; target?: SelectedLine; pin?: SelectedPoint };
 type Geometry =
   | { version: 1; kind: 'freehand' }
@@ -77,65 +78,81 @@ references used by their previews. The earlier `equilateral-o5` record still
 imports. The checker applies the same witness to a new point-on-line record
 when its references have the needed proofs.
 
-A later rule can name initial edges such as `square:AB` as a line through
-`square:A` and `square:B`, exact midpoint/intersection
-references, through-two-points, or a chosen reflection branch. For a conditional
-claim, an explicit node such as
-`{id:"step:8:axis", rule:"assume-line", parameter:"step:8:freehand", value:[[0,0.4],[1,0.41]]}`
-would denote an opaque parameter with a numerical projection. Derived nodes
-carry the union of assumption IDs of their parents. A perpendicular to that
-parameter is conditionally perpendicular to it. The parameter's displayed
-coordinates cannot establish that it is horizontal or at a special height.
-This slice represents freehand inputs as unproved and issues no conditional
-certificates.
+Mark creation also saves the two acquired material lines as an optional
+`sources` pair on `Attempt.move`. An operand is either `{edge: index}` for the
+original square boundary or `{crease: index}` for a retained crease. Import
+checks that the pair actually produces the saved material point. Older marks
+retain their positions and their missing source identities stay unknown.
 
-## Checked graph and arithmetic
+## Material construction graph
 
-The checker reconstructs a DAG from chronological evidence. IDs are derived
-from original material features and one-based attempt numbers, for example
-`square:A`, `step:1:axis`, `step:3:landing`. Material crease indices
-are stable within a retained history and resolve to the attempt that added
-the crease. Undo truncates the history and its graph together. A fold creates
-a new placed vertex, referencing its material vertex and the fold. Unfold
-restores the earlier placement, keeping crease IDs. In this slice the placement
-rules cover the flat sheet and the single certified equilateral fold. Unsupported
-frames (including a turnover) do not acquire exact references by numerical
-coincidence.
+The checker reconstructs a directed acyclic graph from chronological evidence.
+Initial vertices, edges and edge midpoints have stable square IDs. Attempts
+introduce axes and other constructed objects under one-based step IDs.
+A retained crease index names its originating material axis where replay can
+bind it to the selected facet's cut. Marks reference those axes or square
+edges through line intersections. Undo truncates the graph with the history.
 
-Nodes are small constructor applications. For example
+The graph supports lines through two points, intersections, midpoints,
+perpendiculars, perpendicular bisectors and reflections. It also evaluates the
+chosen branch of a circle-line intersection. Each rule names prior objects.
+Evaluation is lazy and memoized, so using a prior result never expands its
+construction into a second expression tree.
 
-```json
-{"id":"step:3:landing","kind":"equilateral-apex","pin":"square:A","moving":"square:B","target":"step:1:axis","branch":"above-pin"}
-{"id":"step:4:axis","kind":"perpendicular","point":"step:3:landing","line":"step:1:axis"}
-```
+The exact kernel uses reduced BigInt values of the form
+`(a + b√3) / d`. Division rationalizes the denominator. Circle-line
+branches currently support square roots of rational squares and three times
+rational squares. Other roots, exhausted node or coefficient budgets, and
+unreliable numerical projections produce **Inconclusive**. Parallel lines
+lack a unique exact intersection.
 
-Use dyadic rational arithmetic with BigInt coefficients in
-`a + b√3`. Addition, multiplication, and division by two suffice for this
-witness and local perpendicular and bisector checks. A fact such as
-`a + b√3 = 0` holds exactly when both rational coefficients are zero.
-The checker verifies the O5 witness by membership in the target line, equality
-of squared distances to the pin, and the positive vertical branch. It uses
-the supporting line of the recorded finite target and requires that the selected
-landing falls within the supported material segment. There is no general root
-finder or expanded radical expression.
+A freehand material segment introduces a named parameter for its recorded
+binary64 coordinates. An accepted crease without supported symbolic lineage
+can similarly enter as an explicitly unproved parameter. Descendants
+inherit their operand assumptions. The numerical parameter can be evaluated
+exactly, and its absolute orientation remains unproved. For a two-mark
+conditional perpendicular, both marks must reference the supporting line in
+their definitions. A nearby numeric point alone supplies no exact incidence.
 
-The checker does not call the fold solver, Origamio, or the validator. It
-evaluates each node once and checks earlier references, operand types,
-degeneracies, and branch. Numeric binding is a separate check against the
-move and the relevant material placement reconstructed by physical replay.
-The projection envelope only applies to the small, well-conditioned unit
-square witness. It cannot establish any exact equality. The recorded axis
-and side are also bound verbatim to the move. Arbitrary propagated floating
-point transforms have no certified error bound in this slice.
+## From the graph to a fold
 
-Use topological evaluation with node and coefficient size limits. A roughly
-250-operation history must stay linear in graph size without rewriting a parent
-expression into each descendant. Stop large or unsupported calculations with
-an inconclusive report. Future support for divisions or ill-conditioned lines
-requires its own error bounds and denominator checks.
-The optional `maxDerivedNodes` inspection and import setting limits the
-symbolic work for a given read. The limit and resulting verdicts are computed
-locally. A later check can revisit the same saved intent with a larger budget.
+Dragging a mark through the neighborhood of its reflected landing can acquire
+a perpendicular through a second mark on one unambiguous exposed crease
+segment. The pointer must pass the second mark. Ordinary landings and other
+snaps remain candidates and the existing acquisition and release rules
+resolve the competition.
+
+The checker establishes incidence of both material points on the selected
+line. It constructs the perpendicular through the second point, reflects the
+first, and verifies the midpoint and perpendicular identities. The gesture
+evaluates that construction and projects the axis and landing into the
+selected facet using the current display isometry. The resulting proposal
+goes through the material validator. Geometry can still be previewed from a
+numerically identified pair when its exact lineage is inconclusive.
+
+Folds, unfolds and turnover carry their own numerical placements. Material
+construction IDs and coordinates persist through them. The certified
+same-facet relationships are invariant under that facet's rigid placement.
+Projection checks bind the derived proposal to the recorded numerical move.
+This slice does not certify arbitrary constructions spanning separate
+material placements. It retains the earlier synthetic apex path for the
+specific cross-facet gesture exercised by that fixture.
+
+## Checking boundary
+
+Import first verifies physical replay. The symbolic checker then rebuilds
+the graph from acquired references, checking operand types, incidence,
+branch selection, and numerical projection. A tolerance establishes that
+the projected construction matches the physical move within the numerical
+envelope. Exact mathematical equality is checked in the graph. Saved
+verdicts supply no authority for either check.
+
+Reference or projection contradictions are import errors. Unsupported or
+inconclusive evidence stays in the file. The optional `maxDerivedNodes`
+setting bounds symbolic work for a particular inspection or import, so a
+later check can revisit the same evidence with a larger budget. The
+independent [material audit](SOUNDNESS.md) continues to check numerical sheet
+invariants and has its own verdict.
 
 ## Concrete example and compatibility
 
@@ -193,7 +210,12 @@ certificate label. Edits that create an entirely different, consistent
 construction can pass. The checker does not authenticate pointer events or
 test file authorship.
 
-Continuous collision-free 3D folding, generalized O6/O7, arbitrary material
-placements, and unchecked derived floating-point geometry are outside the
-proof scope. The initial implementation only needs O2 on selected square
-vertices, the equilateral O5 witness, and O4 through its visible apex.
+The representative browser tests also draw a crease through opposite edge
+midpoints, mark intersections on an oblique freehand crease, turn the sheet
+over, and construct a conditional perpendicular through one of the marks.
+They check that a slightly tilted freehand continuation remains a numerical
+near match. These tests use synthetic gestures. The original hexagon
+history and its later operations were unavailable for replay.
+
+The proof scope is planar. It excludes continuous collision-free 3D
+foldability, generalized O6/O7, and unsupported algebraic roots or placements.

@@ -1,9 +1,11 @@
-import { apply, type Line, type Vec } from '../../vendor/origamio/src/geometry';
+import { apply, distance, type Line, type Vec } from '../../vendor/origamio/src/geometry';
 import type { Move, PaperState } from './engine';
 import { pointOnLineBranch, type CreaseReference, type GeometryEvidence, type SelectedLine, type SelectedPoint, type VertexReference } from './geometry-intent';
 import { paperInView } from './paper-pose';
+import { displayAxis, MaterialGeometry, vertexId as root, type MaterialAxis } from './material-geometry';
+import { materialLine } from './material-points';
 import type { Experiment } from './experiment';
-import { CORNERS, ProofBudget, ProofGraph, project, squareVertices, type SquareCorner } from './proof-graph';
+import { CORNERS, ProofBudget, ProofGraph, ProofUnsupported, project, squareVertices } from './proof-graph';
 
 export type { CapturedGeometry, CreaseReference, GeometryEvidence, VertexReference } from './geometry-intent';
 
@@ -13,14 +15,14 @@ export interface GeometryCheckOptions {
 }
 
 export interface GeometryReport {
-  readonly status: 'certified' | 'near-match' | 'unverified' | 'inconclusive' | 'invalid';
+  readonly status: 'certified' | 'conditional' | 'near-match' | 'unverified' | 'inconclusive' | 'invalid';
   readonly detail: string;
   readonly dependencies: readonly string[];
+  readonly assumptions?: readonly string[];
 }
 
 const report = (status: GeometryReport['status'], detail: string, dependencies: readonly string[] = []): GeometryReport =>
   ({status, detail, dependencies});
-const root = (corner: SquareCorner) => `square:${corner}`;
 const axisId = (attempt: number) => `step:${attempt}:axis`;
 const landingId = (attempt: number) => `step:${attempt}:landing`;
 const assert: (condition: unknown, detail: string) => asserts condition = (condition, detail) => {
@@ -83,7 +85,10 @@ function checkRecordedProjection(move: Move, evidence: Exclude<GeometryEvidence,
 
 function checkProjection(move: Move, graph: ProofGraph, axis: string, moving: XY) {
   const exact = graph.axis(axis);
-  const origin = project(exact.point), direction = project(exact.direction);
+  checkAxis(move, project(exact.point), project(exact.direction), moving);
+}
+
+function checkAxis(move: Move, origin: XY, direction: XY, moving?: XY) {
   const [a, b] = move.line;
   const actualDirection = delta(b, a);
   const extent = norm(actualDirection);
@@ -91,11 +96,11 @@ function checkProjection(move: Move, graph: ProofGraph, axis: string, moving: XY
     Math.abs(cross(actualDirection, direction)) <= projectionTolerance * extent * norm(direction) &&
     [a, b].every(point => Math.abs(axisDistance(point, origin, direction)) <= projectionTolerance),
     'The recorded axis is inconsistent with the exact constraint.');
-  assert(move.side * axisDistance(moving, a, actualDirection) > projectionTolerance,
+  assert(!moving || move.side * axisDistance(moving, a, actualDirection) > projectionTolerance,
     'The recorded side does not move the selected source.');
 }
 
-function freehandReport(move: Move, activeApex: number | undefined, graph: ProofGraph): GeometryReport {
+function freehandReport(move: Move, activeApex: number | undefined, graph: ProofGraph, state: PaperState): GeometryReport {
   if (activeApex !== undefined) {
     const id = landingId(activeApex);
     const [x, y] = project(graph.point(id));
@@ -106,6 +111,24 @@ function freehandReport(move: Move, activeApex: number | undefined, graph: Proof
     if (Math.abs(dx) > projectionTolerance && Math.abs(slope) <= .01 &&
         Math.abs(ay + (x - ax) * slope - y) <= .01) {
       return report('near-match', 'Freehand axis is near the horizontal through the certified apex.', [id]);
+    }
+  }
+  const [start, end] = move.line;
+  const axis = delta(end, start);
+  for (const facet of paperInView(state).facets) {
+    for (const mark of state.marks ?? []) {
+      if (!covers(facet, xy(mark.point), consistencyTolerance)) continue;
+      const point = xy(apply(facet.transform, mark.point));
+      if (Math.abs(axisDistance(point, start, axis)) > .01) continue;
+      for (const [index, line] of state.creases.entries()) {
+        if (!onSegment(xy(mark.point), line)) continue;
+        const [x, y] = delta(xy(apply(facet.transform, line.b)), xy(apply(facet.transform, line.a)));
+        const cosine = (axis[0] * x + axis[1] * y) / (norm(axis) * Math.hypot(x, y));
+        if (Math.abs(cosine) <= .02) {
+          return report('near-match', 'Freehand axis is near a perpendicular through a marked point.',
+            [`step:${mark.id}:mark`, `crease:${index}`]);
+        }
+      }
     }
   }
   return report('unverified', 'Freehand axis has no recorded exact constraint.');
@@ -121,7 +144,7 @@ function selectedPoint(view: PaperState, selected: SelectedPoint) {
     'Invalid acquired point.');
   if (material === undefined) return;
   assert(keys(material, ['facetId', 'point', ...(material?.corner === undefined ? [] : ['corner']),
-    ...(material?.markId === undefined ? [] : ['markId'])]) && Number.isSafeInteger(material.facetId) &&
+    ...(material?.markId === undefined ? [] : ['markId']), ...(material?.edgeMidpoint === undefined ? [] : ['edgeMidpoint'])]) && Number.isSafeInteger(material.facetId) &&
     vector(material.point), 'Invalid material point reference.');
   const facet = facetFor(view, material.facetId);
   assert(facet && covers(facet, xy(material.point), consistencyTolerance) &&
@@ -130,6 +153,12 @@ function selectedPoint(view: PaperState, selected: SelectedPoint) {
   if (material.corner !== undefined) {
     assert(CORNERS.includes(material.corner) && exactCoordinates(xy(material.point), squareVertices[material.corner]),
       'The point is not the named square vertex.');
+  }
+  if (material.edgeMidpoint !== undefined) {
+    const edge = materialLine(view, {edge: material.edgeMidpoint});
+    assert(edge && material.corner === undefined && material.markId === undefined &&
+      exactCoordinates(xy(material.point), [(edge.a.x + edge.b.x) / 2, (edge.a.y + edge.b.y) / 2]),
+      'The point is not the named material edge midpoint.');
   }
   if (material.markId !== undefined) {
     const mark = view.marks?.find(({id}) => id === material.markId);
@@ -187,14 +216,16 @@ function checkReflection(move: Move, moving: XY, landing: XY, pin?: XY) {
 const unsupported = (detail: string) => report('unverified', detail);
 
 /** Check captured intent against replay, then certify the supported subset without calling a fold solver. */
-export function inspectGeometry(experiment: Experiment, options: GeometryCheckOptions = {}): readonly GeometryReport[] {
+function replayGeometry(experiment: Experiment, options: GeometryCheckOptions = {}) {
   const budget = options.maxDerivedNodes;
   if (budget !== undefined && (!Number.isSafeInteger(budget) || budget < 0)) {
     throw new RangeError('The derived proof node budget must be a nonnegative integer.');
   }
   const graph = budget === undefined ? new ProofGraph() : new ProofGraph(CORNERS.length + budget);
   for (const corner of CORNERS) graph.add(root(corner), {kind: 'vertex', corner});
-  const centers = new Map<number, string | 'inconclusive'>();
+  const material = new MaterialGeometry(graph);
+  const limitedCreases = new Set<number>();
+  let intrinsic: MaterialAxis | undefined;
   const apices = new Map<number, string>();
   const inconclusive = new Set<number>();
   const active: number[] = [];
@@ -202,16 +233,30 @@ export function inspectGeometry(experiment: Experiment, options: GeometryCheckOp
   let before = experiment.initial;
 
   function certifyEquilateral(attempt: number, move: Move, moving: XY, crease: number) {
-    const proof = centers.get(crease);
-    if (proof === 'inconclusive') return report('inconclusive', 'Checking the selected center crease ran out of proof budget.');
-    if (!proof) return unsupported('The selected center crease has no exact proof.');
+    const proof = material.line({crease});
+    if (limitedCreases.has(crease)) return report('inconclusive', 'Checking the selected center crease ran out of proof budget.');
+    if (!proof || graph.assumptions(proof).length || !graph.isCenter(proof)) return unsupported('The selected center crease has no exact proof.');
     const landing = landingId(attempt), axis = axisId(attempt);
     graph.add(landing, {kind: 'equilateral-apex', pin: root('A'), moving: root('B'), target: proof, branch: 'above-pin'});
     graph.add(axis, {kind: 'bisector', from: root('B'), to: landing});
     checkProjection(move, graph, axis, moving);
     apices.set(attempt, proof);
+    intrinsic = {id: axis, facetId: before.facets[0].id};
     return report('certified', 'Equilateral upper branch at (1/2, √3/2).',
       [...new Set([...graph.dependencies(axis), ...graph.dependencies(landing)])]);
+  }
+
+  function deduction(detail: string, dependencies: readonly string[], ...ids: string[]): GeometryReport {
+    const assumptions = [...new Set(ids.flatMap(id => graph.assumptions(id)))];
+    return assumptions.length ? {...report('conditional', detail, dependencies), assumptions}
+      : report('certified', detail, dependencies);
+  }
+
+  function inMaterialFrame(move: Move, axis: string, facetId: number, detail: string, moving?: XY) {
+    const line = displayAxis(graph, axis, before, facetId);
+    checkAxis(move, xy(line.a), delta(xy(line.b), xy(line.a)), moving);
+    intrinsic = {id: axis, facetId};
+    return deduction(detail, graph.dependencies(axis), axis);
   }
 
   function check(move: Move, attempt: number): GeometryReport {
@@ -221,7 +266,7 @@ export function inspectGeometry(experiment: Experiment, options: GeometryCheckOp
     const activeApex = !turned && active.length === 1 && apices.has(active[0]) ? active[0] : undefined;
     if (evidence.kind === 'freehand') {
       assert(keys(evidence, ['kind', 'version']) && !move.intent, 'Invalid freehand evidence.');
-      return freehandReport(move, activeApex, graph);
+      return freehandReport(move, activeApex, graph, before);
     }
     checkRecordedProjection(move, evidence);
     const view = paperInView(before);
@@ -233,12 +278,9 @@ export function inspectGeometry(experiment: Experiment, options: GeometryCheckOp
         assert(keys(evidence, [...common, 'moving', 'target']) && !move.intent, 'Invalid vertex bisector evidence.');
         const moving = vertex(view, evidence.moving), target = vertex(view, evidence.target);
         checkReflection(move, moving.projected, target.projected);
-        if (!flat || !identity(moving.facet) || !identity(target.facet)) {
-          return unsupported('Selected vertex bisector is outside the exact flat-square frame.');
-        }
+        if (moving.facet.id !== target.facet.id) return unsupported('The selected vertices are on separate material placements.');
         graph.add(axis, {kind: 'bisector', from: root(evidence.moving.corner), to: root(evidence.target.corner)});
-        checkProjection(move, graph, axis, moving.projected);
-        return report('certified', 'Exact perpendicular bisector of the selected square vertices.', graph.dependencies(axis));
+        return inMaterialFrame(move, axis, moving.facet.id, 'Exact perpendicular bisector of the selected square vertices.', moving.projected);
       }
       case 'equilateral-o5': {
         // Earlier exports used a specialized assertion for this witness.
@@ -264,18 +306,47 @@ export function inspectGeometry(experiment: Experiment, options: GeometryCheckOp
           evidence.branch === pointOnLineBranch(evidence.pin.point, evidence.landing, evidence.target),
           'The recorded landing does not match the selected line or solution branch.');
         checkReflection(move, moving, landing, pin);
-        if (flat && evidence.pin.material?.corner === 'A' && evidence.moving.material?.corner === 'B' &&
-            evidence.target.crease !== undefined && centers.has(evidence.target.crease) && evidence.landing.y > 0) {
-          return certifyEquilateral(attempt, move, moving, evidence.target.crease);
+        const crease = evidence.target.crease;
+        if (crease === undefined || evidence.moving.material?.facetId !== evidence.target.facetId ||
+            evidence.pin.material?.facetId !== evidence.target.facetId) {
+          return unsupported('The selected circle and line do not share a supported material placement.');
         }
-        return unsupported('The selected point-on-line constraint is outside the current proof rules.');
+        if (limitedCreases.has(crease)) return report('inconclusive', 'Checking the supporting crease exceeded the proof budget.');
+        const target = material.line({crease}), fixedId = material.point(evidence.pin), movingId = material.point(evidence.moving);
+        if (!target || !fixedId || !movingId) return unsupported('The selected point-on-line constraint has unproved operands.');
+        const placement = displayAxis(graph, target, before, evidence.target.facetId);
+        const actual = delta(xy(evidence.target.line.b), xy(evidence.target.line.a));
+        const expected = delta(xy(placement.b), xy(placement.a));
+        const agrees = actual[0] * expected[0] + actual[1] * expected[1] > 0;
+        const branch = evidence.branch === 'at-foot' ? 0 : (evidence.branch === 'after-foot') === agrees ? 1 : -1;
+        const landingNode = landingId(attempt);
+        graph.add(landingNode, {kind: 'circle-line', moving: movingId, pin: fixedId, target, branch});
+        const facet = facetFor(view, evidence.target.facetId)!;
+        const [x, y] = project(graph.point(landingNode));
+        assert(near(xy(apply(facet.transform, {x, y})), landing), 'The exact circle-line branch disagrees with the landing.');
+        graph.add(axis, {kind: 'bisector', from: movingId, to: landingNode});
+        const result = inMaterialFrame(move, axis, facet.id, 'Exact circle-line branch and perpendicular bisector.', moving);
+        // Keep the previous apex diagnostic available for equivalent captures from the general solver.
+        if (flat && fixedId === root('A') && movingId === root('B') && y > 0 && graph.isCenter(target) &&
+            result.status === 'certified') {
+          apices.set(attempt, target);
+          return {...result, detail: 'Equilateral upper branch at (1/2, √3/2).',
+            dependencies: [...new Set([...result.dependencies, ...graph.dependencies(landingNode)])]};
+        }
+        return result;
       }
       case 'point-to-point': {
         assert(keys(evidence, [...common, 'moving', 'target']) && !move.intent, 'Invalid point-to-point evidence.');
         selectedPoint(view, evidence.moving);
         selectedPoint(view, evidence.target);
         checkReflection(move, xy(evidence.moving.point), xy(evidence.target.point));
-        return unsupported('The selected point-to-point constraint is outside the current proof rules.');
+        const facetId = evidence.moving.material?.facetId;
+        const from = material.point(evidence.moving), to = material.point(evidence.target);
+        if (facetId === undefined || facetId !== evidence.target.material?.facetId || !from || !to) {
+          return unsupported('The selected points do not share a supported material placement.');
+        }
+        graph.add(axis, {kind: 'bisector', from, to});
+        return inMaterialFrame(move, axis, facetId, 'Exact perpendicular bisector of the selected points.', xy(evidence.moving.point));
       }
       case 'through-points': {
         assert(keys(evidence, [...common, 'points']) && !move.intent && Array.isArray(evidence.points) &&
@@ -286,7 +357,14 @@ export function inspectGeometry(experiment: Experiment, options: GeometryCheckOp
           assert(Math.abs(axisDistance(xy(point.point), start, delta(end, start))) <= consistencyTolerance,
             'The recorded crease does not pass through the selected point.');
         }
-        return unsupported('The selected crease-through-points constraint is outside the current proof rules.');
+        const [a, b] = evidence.points;
+        const facetId = a.material?.facetId;
+        const from = material.point(a), to = b && material.point(b);
+        if (facetId === undefined || facetId !== b?.material?.facetId || !from || !to) {
+          return unsupported('The acquired points do not define a supported material line.');
+        }
+        graph.add(axis, {kind: 'through', from, to});
+        return inMaterialFrame(move, axis, facetId, 'Exact line through the two selected points.');
       }
       case 'line-fold': {
         const intent = move.intent;
@@ -303,6 +381,14 @@ export function inspectGeometry(experiment: Experiment, options: GeometryCheckOp
           assert(evidence.pin && near(xy(evidence.pin.point), xy(intent.pin)), 'The selected pin disagrees with the numerical fold.');
           selectedPoint(view, evidence.pin);
         }
+        if (intent.kind !== 'align-lines' && evidence.pin?.material?.facetId === intent.source.facetId &&
+            evidence.source.crease !== undefined) {
+          const point = material.point(evidence.pin), source = material.line({crease: evidence.source.crease});
+          if (point && source) {
+            graph.add(axis, {kind: 'perpendicular', point, line: source});
+            return inMaterialFrame(move, axis, intent.source.facetId, 'Exact perpendicular through the selected pin.', xy(intent.moving));
+          }
+        }
         return unsupported('The selected line fold is outside the current proof rules.');
       }
       case 'perpendicular-through': {
@@ -314,8 +400,8 @@ export function inspectGeometry(experiment: Experiment, options: GeometryCheckOp
         const {facet} = materialCrease(view, evidence.source);
         selectedLine(view, {...intent.source, crease: evidence.source.crease});
         assert(facet.id === intent.source.facetId, 'The selected line facet disagrees with the numerical fold.');
-        const proof = centers.get(evidence.source.crease);
-        if ((!turned && active.length === 1 && inconclusive.has(active[0])) || proof === 'inconclusive') {
+        const proof = material.line({crease: evidence.source.crease});
+        if ((!turned && active.length === 1 && inconclusive.has(active[0])) || limitedCreases.has(evidence.source.crease)) {
           return report('inconclusive', 'Checking a selected dependency ran out of proof budget.');
         }
         if (activeApex === undefined || !proof || proof !== apices.get(activeApex) || !identity(facet) ||
@@ -326,35 +412,64 @@ export function inspectGeometry(experiment: Experiment, options: GeometryCheckOp
         assert(close(pin.projected, project(graph.point(landing))), 'The pin is not the proved apex on the recorded facet.');
         graph.add(axis, {kind: 'perpendicular', point: landing, line: proof});
         checkProjection(move, graph, axis, xy(intent.moving));
+        intrinsic = {id: axis, facetId: facet.id};
         return report('certified', 'Horizontal through the certified apex at y = √3/2.', graph.dependencies(axis));
+      }
+      case 'marked-perpendicular': {
+        assert(keys(evidence, [...common, 'moving', 'through', 'source', 'landing']) && !move.intent &&
+          vector(evidence.landing), 'Invalid marked perpendicular evidence.');
+        selectedPoint(view, evidence.moving);
+        selectedPoint(view, evidence.through);
+        selectedLine(view, evidence.source);
+        const p = evidence.moving.material, q = evidence.through.material;
+        const {facetId, crease, line} = evidence.source;
+        assert(p?.markId !== undefined && q?.markId !== undefined && p.markId !== q.markId &&
+          p.facetId === facetId && q.facetId === facetId && crease !== undefined, 'The marks and source must share one material facet.');
+        const moving = xy(evidence.moving.point), through = xy(evidence.through.point), landing = xy(evidence.landing);
+        assert(onSegment(moving, line) && onSegment(through, line) &&
+          near(landing, [2 * through[0] - moving[0], 2 * through[1] - moving[1]]),
+          'The marks or reflected landing disagree with the selected crease.');
+        checkReflection(move, moving, landing, through);
+        const solved = material.perpendicular(before, p.markId, q.markId, crease, facetId);
+        if (!solved) return report('inconclusive', 'The supporting crease or marked intersections have no available exact construction.');
+        assert(near(xy(solved.landing), landing), 'The exact reflected landing disagrees with the recorded landing.');
+        const [, throughId, source] = solved.dependencies;
+        graph.add(axis, {kind: 'perpendicular', point: throughId, line: source});
+        const result = inMaterialFrame(move, axis, facetId, 'The marked point is the exact midpoint of the grab and landing. The fold is perpendicular to the selected crease.', moving);
+        return {...result, dependencies: solved.dependencies};
       }
       default:
         throw new Error('Unknown geometric constraint.');
     }
   }
 
-  return experiment.attempts.map((entry, index) => {
+  const reports = experiment.attempts.map((entry, index) => {
     const attempt = index + 1;
     let result = unsupported('This operation has no fold constraint.');
-    if (!entry.operation) {
-      try {
+    intrinsic = undefined;
+    try {
+      if (entry.operation === 'mark' && entry.move.sources) {
+        const id = material.mark(attempt, entry.move.sources, entry.move.point);
+        result = id ? deduction('Exact intersection of the two selected material lines.', graph.dependencies(id), id)
+          : report('inconclusive', 'A source line has no available exact evaluation.');
+      } else if (!entry.operation) {
         result = check(entry.move, attempt);
-      } catch (error) {
-        result = report(error instanceof ProofBudget ? 'inconclusive' : 'invalid', (error as Error).message);
       }
-      if (result.status === 'inconclusive') inconclusive.add(attempt);
-      if (entry.validation.status === 'accepted') {
-        if (entry.move.geometry?.kind === 'vertex-bisector' &&
-          (result.status === 'inconclusive' || result.status === 'certified' && graph.isCenter(axisId(attempt)))) {
-          for (let i = before.creases.length; i < entry.state.creases.length; i++) {
-            const {a, b} = entry.state.creases[i];
-            if ([a, b].every(point => Math.abs(point.x - .5) <= projectionTolerance)) {
-              centers.set(i, result.status === 'certified' ? axisId(attempt) : 'inconclusive');
-            }
-          }
+    } catch (error) {
+      result = report(error instanceof ProofBudget || error instanceof ProofUnsupported ? 'inconclusive' : 'invalid', (error as Error).message);
+    }
+    if (result.status === 'inconclusive') inconclusive.add(attempt);
+    if (!entry.operation && entry.validation.status === 'accepted') {
+      try {
+        const assumptions = material.recordCreases(attempt, before, entry.state, intrinsic, entry.move.geometry?.kind === 'freehand');
+        if (assumptions.length && result.status !== 'certified') {
+          result = {...result, assumptions: [...(result.assumptions ?? []), ...assumptions]};
         }
-        active.push(attempt);
+      } catch (error) {
+        if (!(error instanceof ProofBudget || error instanceof ProofUnsupported)) throw error;
+        for (let i = before.creases.length; i < entry.state.creases.length; i++) limitedCreases.add(i);
       }
+      active.push(attempt);
     } else if (entry.operation === 'unfold' && active.at(-1) === entry.move.foldAttempt) {
       active.pop();
     } else if (entry.operation === 'flip') {
@@ -363,4 +478,26 @@ export function inspectGeometry(experiment: Experiment, options: GeometryCheckOp
     before = entry.state;
     return result;
   });
+  return {reports, material};
+}
+
+const inspections = new WeakMap<Experiment, ReturnType<typeof replayGeometry>>();
+function geometryContext(experiment: Experiment) {
+  const cached = inspections.get(experiment);
+  if (cached) return cached;
+  const result = replayGeometry(experiment);
+  inspections.set(experiment, result);
+  return result;
+}
+
+export function inspectGeometry(experiment: Experiment, options?: GeometryCheckOptions): readonly GeometryReport[] {
+  return (options === undefined ? geometryContext(experiment) : replayGeometry(experiment, options)).reports;
+}
+
+export function realizeMarkedPerpendicular(experiment: Experiment, moving: number, through: number, crease: number, facetId: number) {
+  try {
+    return geometryContext(experiment).material.perpendicular(experiment.final, moving, through, crease, facetId);
+  } catch (error) {
+    if (!(error instanceof ProofBudget || error instanceof ProofUnsupported)) throw error;
+  }
 }

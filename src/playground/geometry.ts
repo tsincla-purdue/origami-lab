@@ -6,7 +6,7 @@ import { currentPolygon } from '../../vendor/origamio/src/paper';
 import { snapTargets } from '../../vendor/origamio/src/snap';
 import { paperInView, type LineReference, type Move, type PaperState } from '../lab';
 import { clipCrease, facetCreaseSegments } from '../lab/crease-references';
-import { materialIntersectionDetails, segmentIntersection, visibleMaterialMarks } from '../lab/material-points';
+import { materialIntersectionDetails, materialLine, segmentIntersection, visibleMaterialMarks, type IntersectionSources } from '../lab/material-points';
 import { containsLinePoint } from '../lab/line-constraints';
 import { CORNERS, squareVertices } from '../lab/proof-graph';
 import type { CreaseReference, SelectedLine, SelectedPoint, VertexReference } from '../lab/geometry-intent';
@@ -112,6 +112,7 @@ export interface MarkOption {
   readonly rank: number;
   readonly facetId: number;
   readonly references: readonly Line[];
+  readonly sources: IntersectionSources;
   readonly markId?: number;
 }
 
@@ -124,6 +125,7 @@ export function paperGeometry(paper: PaperState) {
   });
   const marks = visibleMaterialMarks(state);
   const marked = marks.map(({position}) => position);
+  const midpointRefs = new WeakMap<Vec, {facetId: number; edgeMidpoint: number; point: Vec}>();
   const corners: Vec[] = [];
   const vertexRefs = new Map<Vec, VertexReference>();
   for (const [index, {poly, facet, world}] of faces.entries()) {
@@ -172,6 +174,8 @@ export function paperGeometry(paper: PaperState) {
     });
   }
   function pointReference(point: Vec, facetId?: number): SelectedPoint {
+    const midpoint = midpointRefs.get(point);
+    if (midpoint && (facetId === undefined || midpoint.facetId === facetId)) return {point, material: midpoint};
     const vertex = vertexRefs.get(point);
     const mark = marks.find(({position}) => position === point);
     const face = faces.find(({facet, poly}) =>
@@ -183,6 +187,21 @@ export function paperGeometry(paper: PaperState) {
       : mark?.point ?? apply(invert(face.facet.transform), point);
     return {point, material: {facetId: face.facet.id, point: material,
       ...(corner && {corner}), ...(mark && {markId: mark.id})}};
+  }
+  function rememberMidpoint(point: Vec) {
+    for (const {facet, poly} of faces) {
+      if (!location(poly, point)) continue;
+      for (let edge = 0; edge < 4; edge++) {
+        const {a, b} = materialLine(state, {edge})!;
+        if (![a, b].every(end => facet.poly.some(p => distance(p, end) === 0))) continue;
+        const middle = lerp(a, b, .5);
+        if (distance(apply(facet.transform, middle), point) <= EPS) {
+          midpointRefs.set(point, {facetId: facet.id, edgeMidpoint: edge, point: middle});
+          return;
+        }
+      }
+      return;
+    }
   }
   return {
     corners,
@@ -198,13 +217,13 @@ export function paperGeometry(paper: PaperState) {
       const options: (MarkOption & {visible: boolean})[] = [];
       for (const [layer, {facet, poly}] of faces.entries()) {
         const local = apply(invert(facet.transform), world);
-        for (const {point, references} of materialIntersectionDetails(state, local, reach)) {
+        for (const {point, references, sources} of materialIntersectionDetails(state, local, reach)) {
           const position = apply(facet.transform, point);
           // Containment uses the displayed polygon and the displayed intersection.
           if (!location(poly, position) || options.some(option => distance(option.point, point) <= EPS)) continue;
           const markId = state.marks?.find(mark => distance(mark.point, point) <= EPS)?.id;
           const visible = visibleAt(position, layer);
-          options.push({point, position, rank: faces.length - layer, facetId: facet.id, markId, visible,
+          options.push({point, position, rank: faces.length - layer, facetId: facet.id, markId, visible, sources,
             references: references.flatMap(line => {
               const local = clipCrease(line, facet.poly);
               return local ? [applyToLine(facet.transform, local)] : [];
@@ -223,6 +242,7 @@ export function paperGeometry(paper: PaperState) {
       const { minX, maxX, minY, maxY } = bounds(faces.flatMap(({poly}) => poly));
       const center = scale(add({ x: minX, y: minY }, { x: maxX, y: maxY }), 0.5);
       const targets = snapTargets(state).points.filter(({kind, point}) => kind !== 'vertex' && hit(point) === 'edge');
+      for (const target of targets) if (target.kind === 'midpoint') rememberMidpoint(target.point);
       const endpoints = faces.flatMap(({creases}, layer) => creases.flatMap(({line: {a, b}}) =>
         [a, b, scale(add(a, b), .5)].filter(point => visibleAt(point, layer))));
       return [...marked, ...corners, ...targets.map(({point}) => point), ...endpoints, center];
@@ -234,8 +254,10 @@ export function paperGeometry(paper: PaperState) {
         if (!points.some(existing => distance(existing, point) <= EPS)) points.push(point);
       };
       for (const point of marked) include(point);
-      for (const {line: {a, b}, layer} of lines) {
-        for (const point of [a, b, lerp(a, b, .5)]) {
+      for (const {line: {a, b}, layer, index} of lines) {
+        const midpoint = lerp(a, b, .5);
+        if (index === undefined && visibleAt(midpoint, layer)) rememberMidpoint(midpoint);
+        for (const point of [a, b, midpoint]) {
           if (visibleAt(point, layer)) include(point);
         }
       }

@@ -13,6 +13,7 @@ export interface SelectedPoint {
     readonly point: Vec;
     readonly corner?: SquareCorner;
     readonly markId?: number;
+    readonly edgeMidpoint?: number;
   };
 }
 
@@ -45,6 +46,8 @@ export type CapturedGeometry =
   | (PointOnLine & { readonly landing: Vec; readonly branch: Branch })
   | { readonly kind: 'point-to-point'; readonly moving: SelectedPoint; readonly target: SelectedPoint }
   | { readonly kind: 'through-points'; readonly points: readonly SelectedPoint[] }
+  | { readonly kind: 'marked-perpendicular'; readonly moving: SelectedPoint; readonly through: SelectedPoint;
+      readonly source: SelectedLine; readonly landing: Vec }
   | { readonly kind: 'line-fold'; readonly source: SelectedLine; readonly target?: SelectedLine; readonly pin?: SelectedPoint };
 
 export type GeometryEvidence = { readonly version: 1 } & (

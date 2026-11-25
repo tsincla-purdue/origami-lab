@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { createExperiment, importExperiment, inspectGeometry, recordMove, recordUnfold, serializeExperiment, validate,
+import { createExperiment, importExperiment, inspectGeometry, realizeMarkedPerpendicular, recordMark, recordMove, recordUnfold, serializeExperiment, validate,
   solvePointOntoLine, type Experiment, type Move } from '../src/lab';
 import { recordGestureMove } from '../src/lab/experiment';
 import type { CapturedGeometry } from '../src/lab/proof-geometry';
-import { ProofBudget, ProofGraph, project } from '../src/lab/proof-graph';
+import { ProofBudget, ProofGraph, ProofUnsupported, project } from '../src/lab/proof-graph';
 
 const a = {x: 0, y: 0}, b = {x: 1, y: 0};
 const fromA = {facetId: 0, corner: 'A'} as const;
@@ -132,8 +132,8 @@ describe('bounded exact graph', () => {
       previous = id;
     }
     expect(graph.size).toBe(252);
-    expect(graph.point(previous)[0]).toEqual({a: (2n ** 251n + 1n) / 3n, b: 0n, shift: 250});
-    expect(project(graph.point(previous))).toEqual([2 / 3, 0]);
+    expect(graph.point(previous)[0]).toEqual({a: (2n ** 251n + 1n) / 3n, b: 0n, d: 2n ** 250n});
+    expect(project(graph.point(previous))[0]).toBeCloseTo(2 / 3, 15);
     expect(() => graph.add('overflow', {kind: 'midpoint', from: 'a', to: previous})).toThrow(ProofBudget);
     expect(graph.size).toBe(252);
   }, 2000);
@@ -141,8 +141,80 @@ describe('bounded exact graph', () => {
   it('checks reference types and order before evaluating a rule', () => {
     const graph = new ProofGraph();
     graph.add('a', {kind: 'vertex', corner: 'A'});
-    expect(() => graph.add('line', {kind: 'bisector', from: 'a', to: 'later'})).toThrow('a proved point');
-    expect(() => graph.add('line', {kind: 'bisector', from: 'a', to: 'a'})).toThrow('coincide');
-    expect(graph.size).toBe(1);
+    expect(() => graph.add('line', {kind: 'bisector', from: 'a', to: 'later'})).toThrow('Missing geometric operand');
+    graph.add('line', {kind: 'bisector', from: 'a', to: 'a'});
+    expect(() => graph.axis('line')).toThrow('coincide');
+    expect(graph.size).toBe(2);
+  });
+});
+
+
+describe('compositional exact constructions', () => {
+  it('constructs and reflects through a perpendicular at a non-dyadic intersection', () => {
+    const graph = new ProofGraph();
+    for (const corner of ['A', 'B', 'C', 'D'] as const) graph.add(corner, {kind: 'vertex', corner});
+    graph.add('bottom', {kind: 'midpoint', from: 'A', to: 'B'});
+    graph.add('right', {kind: 'midpoint', from: 'B', to: 'C'});
+    graph.add('top', {kind: 'midpoint', from: 'C', to: 'D'});
+    graph.add('first', {kind: 'through', from: 'bottom', to: 'right'});
+    graph.add('second', {kind: 'through', from: 'top', to: 'B'});
+    graph.add('crossing', {kind: 'intersection', first: 'first', second: 'second'});
+    graph.add('perpendicular', {kind: 'perpendicular', point: 'crossing', line: 'first'});
+    graph.add('reflection', {kind: 'reflection', point: 'bottom', line: 'perpendicular'});
+    graph.add('middle', {kind: 'midpoint', from: 'reflection', to: 'bottom'});
+    graph.add('bisector', {kind: 'bisector', from: 'reflection', to: 'bottom'});
+    expect(graph.point('crossing')).toEqual([{a: 5n, b: 0n, d: 6n}, {a: 1n, b: 0n, d: 3n}]);
+    expect(graph.contains('first', 'crossing')).toBe(true);
+    expect(graph.contains('second', 'crossing')).toBe(true);
+    expect(graph.perpendicular('first', 'perpendicular')).toBe(true);
+    expect(graph.perpendicular('first', 'bisector')).toBe(true);
+    expect(graph.samePoint('middle', 'crossing')).toBe(true);
+    expect(graph.assumptions('bisector')).toEqual([]);
+  });
+
+  it('inherits freehand assumptions and refuses approximate collinearity as a proof', () => {
+    const graph = new ProofGraph();
+    for (const corner of ['A', 'B', 'C', 'D'] as const) graph.add(corner, {kind: 'vertex', corner});
+    graph.add('freehand', {kind: 'parameter-line', from: [0, .001], to: [1, .51], assumption: 'stroke:1'});
+    graph.add('left', {kind: 'through', from: 'A', to: 'D'});
+    graph.add('right', {kind: 'through', from: 'B', to: 'C'});
+    graph.add('P', {kind: 'intersection', first: 'freehand', second: 'left'});
+    graph.add('Q', {kind: 'intersection', first: 'freehand', second: 'right'});
+    graph.add('perpendicular', {kind: 'perpendicular', point: 'Q', line: 'freehand'});
+    expect(graph.assumptions('perpendicular')).toEqual(['stroke:1']);
+    expect(graph.perpendicular('freehand', 'perpendicular')).toBe(true);
+    expect(project(graph.markedPerpendicular('P', 'Q', 'freehand').landing)[0]).toBe(2);
+    expect(() => graph.markedPerpendicular('A', 'Q', 'freehand')).toThrow(ProofUnsupported);
+  });
+
+  it('realizes an exterior landing while leaving the physical refusal authoritative', () => {
+    let experiment = recordUnfold(recordGestureMove(createExperiment(), center, bisector));
+    const horizontal: Move = {line: [[0, .25], [1, .25]], side: -1};
+    experiment = recordUnfold(recordGestureMove(experiment, horizontal, {kind: 'freehand'}));
+    experiment = recordMark(experiment, {x: .5, y: 1}, [{edge: 2}, {crease: 0}]);
+    experiment = recordMark(experiment, {x: .5, y: .25}, [{crease: 0}, {crease: 1}]);
+    const realized = realizeMarkedPerpendicular(experiment, 5, 6, 0, 0);
+    expect(realized?.landing).toEqual({x: .5, y: -.5});
+    const {line, landing} = realized!;
+    const [moving, through] = experiment.final.marks!.map(({id, point}) => ({point, material: {facetId: 0, point, markId: id}}));
+    const move: Move = {line: [[line.a.x, line.a.y], [line.b.x, line.b.y]], side: line.b.x > line.a.x ? 1 : -1, angle: 90};
+    const proposed = recordGestureMove(experiment, move, {kind: 'marked-perpendicular', moving, through, landing,
+      source: {facetId: 0, crease: 0, line: experiment.final.creases[0]}});
+    expect(proposed.attempts.at(-1)?.validation.status).toBe('unverified');
+    expect(proposed.final).toEqual(experiment.final);
+    const report = inspectGeometry(importExperiment(serializeExperiment(proposed))).at(-1);
+    expect(report).toMatchObject({status: 'conditional', assumptions: ['step:3:crease:1:freehand']});
+    const tampered = JSON.parse(serializeExperiment(proposed));
+    tampered.attempts[5].move.sources = [{edge: 2}, {crease: 0}];
+    expect(() => importExperiment(JSON.stringify(tampered))).toThrow(/mark does not match/);
+  });
+
+  it('reports unsupported circle-line roots without approximating an exact result', () => {
+    const graph = new ProofGraph();
+    graph.add('A', {kind: 'vertex', corner: 'A'});
+    graph.add('B', {kind: 'vertex', corner: 'B'});
+    graph.add('line', {kind: 'parameter-line', from: [0, .25], to: [1, .25], assumption: 'stroke:1'});
+    graph.add('root', {kind: 'circle-line', pin: 'A', moving: 'B', target: 'line', branch: 1});
+    expect(() => graph.point('root')).toThrow(ProofUnsupported);
   });
 });

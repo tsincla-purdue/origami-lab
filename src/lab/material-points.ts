@@ -9,6 +9,17 @@ export interface MaterialMark {
   readonly point: Vec;
 }
 
+export type MaterialLineId = {readonly edge: number} | {readonly crease: number};
+export type IntersectionSources = readonly [MaterialLineId, MaterialLineId];
+
+export function materialLine(state: PaperState, id: MaterialLineId): Line | undefined {
+  if (!id || typeof id !== 'object' || Object.keys(id).length !== 1) return;
+  if ('crease' in id) return Number.isSafeInteger(id.crease) && id.crease >= 0 ? state.creases[id.crease] : undefined;
+  if (!Number.isSafeInteger(id.edge) || id.edge < 0 || id.edge > 3) return;
+  const vertices = [{x: 0, y: 0}, {x: state.width, y: 0}, {x: state.width, y: state.height}, {x: 0, y: state.height}];
+  return {a: vertices[id.edge], b: vertices[(id.edge + 1) % 4]};
+}
+
 /** Intersect finite, non-collinear segments, including their endpoints. */
 export function segmentIntersection(first: Line, second: Line): Vec | undefined {
   const ab = sub(first.b, first.a);
@@ -33,20 +44,20 @@ export function materialIntersectionDetails(state: PaperState, near: Vec, radius
   const corners = [{x: 0, y: 0}, {x: width, y: 0}, {x: width, y: height}, {x: 0, y: height}];
   const edges = corners.map((a, index) => ({a, b: corners[(index + 1) % corners.length]}));
   const limit = radius + EPS;
-  const creases = state.creases.filter(({a, b}) =>
+  const creases = state.creases.map((line, index) => ({line, id: {crease: index}})).filter(({line: {a, b}}) =>
     Math.min(a.x, b.x) <= near.x + limit && Math.max(a.x, b.x) >= near.x - limit &&
     Math.min(a.y, b.y) <= near.y + limit && Math.max(a.y, b.y) >= near.y - limit);
-  const points: {point: Vec; references: readonly Line[]}[] = [];
-  function include(first: Line, second: Line) {
+  const points: {point: Vec; references: readonly Line[]; sources: IntersectionSources}[] = [];
+  function include(first: Line, second: Line, sources: IntersectionSources) {
     const point = segmentIntersection(first, second);
     if (point && distance(point, near) <= radius && !points.some(other => distance(other.point, point) <= EPS)) {
-      points.push({point, references: [first, second]});
+      points.push({point, references: [first, second], sources});
     }
   }
   // Prefer the coordinate on the actual paper edge when several pairs meet there.
-  for (const edge of edges) for (const crease of creases) include(edge, crease);
+  for (const [edge, line] of edges.entries()) for (const crease of creases) include(line, crease.line, [{edge}, crease.id]);
   for (const [index, first] of creases.entries()) {
-    for (let i = index + 1; i < creases.length; i++) include(first, creases[i]);
+    for (const second of creases.slice(index + 1)) include(first.line, second.line, [first.id, second.id]);
   }
   return points.sort((a, b) => distance(a.point, near) - distance(b.point, near));
 }

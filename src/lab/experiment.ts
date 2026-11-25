@@ -3,7 +3,7 @@ import {
   ENGINE_REVISION, NUMERICS, apply, canReverseFold, deepFreeze, initialState, reverseFold, turnPaper,
   withMaterialMarks, type Move, type PaperState, type Validation,
 } from './engine';
-import { materialIntersections } from './material-points';
+import { materialIntersections, materialLine, segmentIntersection, type IntersectionSources } from './material-points';
 import { DEFAULT_PAPER_STYLE, isPaperStyle, type PaperStyle } from './paper-style';
 import { inspectGeometry, type CapturedGeometry, type GeometryCheckOptions, type GeometryReport } from './proof-geometry';
 
@@ -25,7 +25,7 @@ export type Attempt = {
   readonly validatorVersion?: never;
 } | {
   readonly operation: 'mark';
-  readonly move: { readonly point: Vec; readonly label: 'Mark point' };
+  readonly move: { readonly point: Vec; readonly label: 'Mark point'; readonly sources?: IntersectionSources };
   readonly validatorVersion?: never;
 } | {
   readonly operation: 'remove-mark';
@@ -152,10 +152,19 @@ export function recordFlip(experiment: Experiment): Experiment {
   });
 }
 
-export function recordMark(experiment: Experiment, point: Vec): Experiment {
+export function recordMark(experiment: Experiment, point: Vec, sources?: IntersectionSources): Experiment {
   requireHistorySpace(experiment);
   const current = experiment.final;
-  const [exact] = materialIntersections(current, point, EPS);
+  let exact: Vec | undefined;
+  if (sources !== undefined) {
+    if (!Array.isArray(sources) || sources.length !== 2 ||
+        !sources.some(id => id && typeof id === 'object' && 'crease' in id)) {
+      throw new Error('A mark needs two material lines including a crease.');
+    }
+    const [first, second] = sources.map(id => materialLine(current, id));
+    exact = first && second ? segmentIntersection(first, second) : undefined;
+    if (!exact || !(distance(point, exact) <= EPS)) throw new Error('The mark does not match its selected material lines.');
+  } else [exact] = materialIntersections(current, point, EPS);
   if (!exact) throw new Error('Choose a crease intersection on the original sheet.');
   const marks = current.marks ?? [];
   if (marks.some(({point}) => distance(point, exact) <= EPS)) {
@@ -163,7 +172,7 @@ export function recordMark(experiment: Experiment, point: Vec): Experiment {
   }
   const state = withMaterialMarks(current, [...marks, {id: experiment.attempts.length + 1, point: exact}]);
   return appendAttempt(experiment, {
-    operation: 'mark', move: {point: exact, label: 'Mark point'}, state,
+    operation: 'mark', move: {point: exact, label: 'Mark point', ...(sources && {sources})}, state,
     validation: {status: 'accepted', code: 'mark-point', reason: 'Marked an exact intersection on the material sheet.'},
   });
 }
@@ -247,7 +256,7 @@ export function importExperiment(text: string, proofOptions?: GeometryCheckOptio
     } else if (entry.operation === 'flip' && !legacy) {
       replay = recordFlip(replay);
     } else if (entry.operation === 'mark' && !legacy) {
-      replay = recordMark(replay, entry.move.point);
+      replay = recordMark(replay, entry.move.point, entry.move.sources);
     } else if (entry.operation === 'remove-mark' && !legacy) {
       replay = recordRemoveMark(replay, entry.move.markAttempt);
     } else {

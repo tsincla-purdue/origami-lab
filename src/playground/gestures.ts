@@ -1,11 +1,12 @@
 import {
-  EPS, add, apply, distance, dot, invert, signedDistance, sub, type Line, type Mat, type Side, type Vec,
+  EPS, add, apply, distance, dot, invert, sideOf, signedDistance, sub, type Line, type Mat, type Side, type Vec,
 } from '../../vendor/origamio/src/geometry';
 import {
   cornerPackets, resolveLineFold, solvePointOntoLine,
   type ConstraintResult, type ConstraintSolution, type LineFoldIntent, type LineReference, type MaterialPacket, type PaperState,
 } from '../lab';
 import { packetHingeLanding } from '../lab/packets';
+import { containsLinePoint } from '../lab/line-constraints';
 import { pointOnLineBranch, type CapturedGeometry, type PointOnLine } from '../lab/geometry-intent';
 import { creasePairs, drawnMarkCandidates, sameAxis } from './crease-snap';
 import { lineKey, pointKey, releaseRadius, selectSnap, snapRadius, type SnapCandidate } from './snap-selection';
@@ -89,6 +90,8 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
   snapping: () => boolean;
   show: (draft?: Draft, hover?: Vec, issue?: ConstraintIssue) => void;
   commit: (draft: Draft) => void;
+  markedPerpendicular: (moving: number, through: number, crease: number, facetId: number) =>
+    {line: Line; landing: Vec} | undefined;
 }) {
   let state: PaperState | undefined;
   let tool: Tool = 'corner';
@@ -218,7 +221,9 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
       // The same motion may hit a mark and align its line. Keep the alignment's material reference.
       const alignment = value.source && candidates.find(({value: option}) =>
         option.lineIntent?.kind === 'align-lines' && sameAxis(value.line, option.line));
-      const draft = alignment ? alignment.value : value;
+      const marked = candidates.find(({value: option}) =>
+        option.capture?.kind === 'marked-perpendicular' && sameAxis(value.line, option.line));
+      const draft = marked?.value ?? (alignment ? alignment.value : value);
       if (!distinct.some(other => targetFacet(draft) === targetFacet(other) && sameAxis(draft.line, other.line))) distinct.push(draft);
     }
     return distinct.length > 1 ? {...distinct[0], alternatives: distinct.slice(1)} : distinct[0];
@@ -240,6 +245,41 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
           target: geometry.pointReference(destination)} as const;
       const value: Draft = {...fold, tool, anchor: press.anchor, destination, snapped: [destination], source, snapLabel, capture, ...material()};
       return [{key: `point/${pointKey(destination)}`, score, value}];
+    });
+  }
+
+  function markedDrafts(press: Drag, target: Vec, map: Mat, radius: number): SnapCandidate<Draft>[] {
+    const paper = geometry;
+    if (!paper || !paper.marked.includes(press.anchor)) return [];
+    const anchor = press.anchor;
+    const moving = paper.pointReference(anchor);
+    if (moving.material?.markId === undefined) return [];
+    const {facetId, markId} = moving.material;
+    const sources = paper.pointSources(anchor, facetId).map(paper.lineReference).filter(line => line.crease !== undefined);
+    const start = apply(map, anchor);
+    return paper.marked.flatMap(point => {
+      if (point === anchor) return [];
+      const through = paper.pointReference(point);
+      const throughId = through.material?.markId;
+      if (throughId === undefined || through.material?.facetId !== facetId) return [];
+      const direction = sub(apply(map, point), start);
+      // The dragged mark must actually pass the second mark. Dropping on it remains point-to-point.
+      if (dot(sub(target, start), direction) <= dot(direction, direction)) return [];
+      const match = sources.filter(({line}) => containsLinePoint(line, point));
+      if (match.length !== 1) return [];
+      const [source] = match;
+      const midpointLanding = add(point, sub(point, anchor));
+      if (distance(apply(map, midpointLanding), target) > releaseRadius(radius) + 2) return [];
+      const realized = callbacks.markedPerpendicular(markId, throughId, source.crease!, facetId);
+      const landing = realized?.landing ?? midpointLanding;
+      const fold = realized ? {line: realized.line, side: sideOf(realized.line, anchor)}
+        : cornerFold(anchor, landing, map, press.minimum);
+      if (!fold) return [];
+      const value: Draft = {...fold, tool, anchor, destination: landing, snapped: [point], source: source.line,
+        snapLabel: 'Perpendicular through mark', capture: {kind: 'marked-perpendicular', moving, through, source, landing},
+        ...material()};
+      return [{key: `marked-perpendicular/${facetId}/${source.crease}/${throughId}`,
+        score: Math.max(0, distance(apply(map, landing), target) - 2), value}];
     });
   }
 
@@ -325,6 +365,7 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
         const {pointReference} = geometry;
         targets ??= geometry.snapPoints();
         const points = pointDrafts(drag, target, map, [...drag.hingeLandings, ...targets], magnet);
+        const marked = markedDrafts(drag, target, map, magnet);
         const radius = event.pointerType === 'touch' ? 13 : event.pointerType === 'pen' ? 10 : 8;
         const creases = creasePairs(fold.line, geometry.creasePoints(), map, radius, anchor, target)
           .map(({key, score, value, solution}) => ({key, score: score * magnet / radius,
@@ -334,7 +375,7 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
         // compare both constraints and let an already acquired axis hold through jitter.
         const candidates = points.some(({score}) => score <= magnet / 2) && !drag.snapKey?.startsWith('axis/')
           ? points : [...points, ...creases];
-        const snapped = previewSnap(candidates, magnet, drag);
+        const snapped = previewSnap([...marked, ...candidates], magnet, drag);
         if (snapped) return snapped;
       }
       return fold && {...fold, tool, anchor, destination, snapped: [], capture: {kind: 'freehand'}, ...material()};
