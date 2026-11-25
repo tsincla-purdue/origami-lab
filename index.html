@@ -59,9 +59,10 @@
             </div>
           </div>
           <div class="paper-toolbar">
-            <div class="paper-actions">
-              <button type="button" id="pin-point" class="button outlined" aria-pressed="false">Pin point</button>
+            <div class="paper-actions" role="group" aria-label="Paper actions">
+              <button type="button" id="unfold" class="button outlined" title="Reverse the latest active fold and keep all creases">Unfold</button>
               <button type="button" id="flip-paper" class="button outlined" aria-pressed="false">Flip over</button>
+              <button type="button" id="pin-point" class="button outlined" aria-pressed="false">Pin point</button>
             </div>
             <label class="snap-toggle"><input id="snap-toggle" type="checkbox" checked /> Snap to points</label>
           </div>
@@ -132,7 +133,6 @@
               <button type="button" id="undo" class="button outlined" title="Remove the last attempt">
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5 4 10l5 5m-5-5h10a5 5 0 0 1 0 10"/></svg>Undo
               </button>
-              <button type="button" id="unfold" class="button outlined" title="Reverse the latest active fold and keep all creases">Unfold</button>
               <button type="button" id="replay" class="button outlined">
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 11 7-11 7Z"/></svg><span id="replay-label">Replay</span>
               </button>
