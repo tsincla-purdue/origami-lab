@@ -3,7 +3,8 @@
 ## Two independent judgments
 
 A fold attempt still records the physical model's verdict and resulting material
-state. A geometric report checks a separate claim about the construction. An
+state. Captured intent records the references and relationship the user chose.
+A geometric report checks that intent. An
 exact planar relation can be certified even when the model refuses the motion.
 An accepted motion supplies no evidence of which geometric target was chosen.
 The independent numerical and material audit in [SOUNDNESS.md](SOUNDNESS.md)
@@ -16,9 +17,11 @@ continues to run.
 | Near match | A recorded freehand axis lies near an independently computed reference. The report names the comparison and makes no claim about the user's intent. |
 | Unverified | References were absent, ambiguous, unsupported, or depended on an unproved construction. |
 | Inconclusive | The checker exhausted its arithmetic or graph budget, or the projection could not be bound reliably. |
+| Invalid | Recorded references are malformed or contradict the numerical operation. |
 
-Invalid certificates are import errors. An inconclusive check cannot produce a
-certificate. The geometric report and physical verdict are presented separately.
+Invalid evidence is visible in a recorded gesture and rejected on import.
+Unverified and inconclusive evidence stays with the replayed experiment.
+Only a successful symbolic check produces a certificate.
 
 ## Evidence at the gesture boundary
 
@@ -28,8 +31,8 @@ that exposed it. A crease hit carries the index of its persistent material
 crease and the facet on which it was selected, even when occlusion clips the
 displayed segment. The selected solver result supplies the branch. Confirming
 an alternative uses that alternative's draft, including its references and
-moving side. A raw drag is explicitly freehand. Existing unsupported snaps
-have no proof claim. A ring, label, or coordinate near a target is insufficient
+moving side. A raw drag is explicitly freehand. Unsupported snaps retain their
+selected references. A ring, label, or coordinate near a target is insufficient
 to name a reference after the fact.
 
 The optional field is stored on the existing `Attempt.move`. It describes the
@@ -43,16 +46,36 @@ mark locations, or the independent material audit.
 ```ts
 type Vertex = { facetId: number; corner: 'A' | 'B' | 'C' | 'D' };
 type Crease = { facetId: number; crease: number }; // zero-based material crease index
-type Rule =
+type Point = { x: number; y: number };
+type SelectedPoint = { point: Point; material?: {
+  facetId: number; point: Point; corner?: Vertex['corner']; markId?: number;
+} };
+type SelectedLine = { facetId: number; line: { a: Point; b: Point }; crease?: number };
+type Intent =
   | { kind: 'vertex-bisector'; moving: Vertex; target: Vertex }
   | { kind: 'equilateral-o5'; moving: Vertex; pin: Vertex; target: Crease;
       branch: 'above-pin' }
-  | { kind: 'perpendicular-through'; pin: Vertex; source: Crease };
+  | { kind: 'perpendicular-through'; pin: Vertex; source: Crease }
+  | { kind: 'point-on-line'; moving: SelectedPoint; pin: SelectedPoint; target: SelectedLine;
+      landing: Point; branch: 'before-foot' | 'at-foot' | 'after-foot' }
+  | { kind: 'point-to-point'; moving: SelectedPoint; target: SelectedPoint }
+  | { kind: 'through-points'; points: SelectedPoint[] }
+  | { kind: 'line-fold'; source: SelectedLine; target?: SelectedLine; pin?: SelectedPoint };
 type Geometry =
   | { version: 1; kind: 'freehand' }
   | ({ version: 1; projection: { axis: [[number, number], [number, number]];
-                                  side: 1 | -1 } } & Rule);
+                                  side: 1 | -1 } } & Intent);
 ```
+
+Point-on-line captures store the selected points in displayed coordinates
+with their material facet and coordinates where available. They store the
+target facet, acquired segment, and material crease ID when the target is a
+crease. The chosen landing and its branch relative to the perpendicular foot
+come from the selected preview, including when the user picks an alternative.
+Point-to-point, crease-through-point, and line-fold gestures also retain the
+references used by their previews. The earlier `equilateral-o5` record still
+imports. The checker applies the same witness to a new point-on-line record
+when its references have the needed proofs.
 
 A later rule can name initial edges such as `square:AB` as a line through
 `square:A` and `square:B`, exact midpoint/intersection
@@ -110,6 +133,9 @@ Use topological evaluation with node and coefficient size limits. A roughly
 expression into each descendant. Stop large or unsupported calculations with
 an inconclusive report. Future support for divisions or ill-conditioned lines
 requires its own error bounds and denominator checks.
+The optional `maxDerivedNodes` inspection and import setting limits the
+symbolic work for a given read. The limit and resulting verdicts are computed
+locally. A later check can revisit the same saved intent with a larger budget.
 
 ## Concrete example and compatibility
 

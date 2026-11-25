@@ -1100,6 +1100,30 @@ test('ordinary point selection and dragging an edge midpoint offer both finite l
   await expect(page.locator('.alternative-landing')).toBeVisible();
   await page.getByRole('button', {name: 'Confirm fold'}).click();
   await expect(page.locator('#history li').last()).toContainText('Point onto line');
+  const experiment = await downloadJSON(page, 'Export experiment');
+  const {move, state, validation} = experiment.attempts.at(-1);
+  expect(validation.status).toBe('accepted');
+  expect(move.geometry).toMatchObject({
+    kind: 'point-on-line',
+    branch: 'after-foot',
+    target: {facetId: 0, crease: 0, line: {a: {x: .5, y: 1}, b: {x: .5, y: 0}}},
+    moving: {point: {x: 1, y: .5}, material: {facetId: 0}},
+    pin: {material: {facetId: 0}},
+  });
+  expect(move.geometry.landing.x).toBeCloseTo(.5, 12);
+  expect(move.geometry.landing.y).toBeLessThan(.5);
+  const {a, b, c, d, e, f} = state.facets.at(-1).transform;
+  expect(a + c * .5 + e).toBeCloseTo(move.geometry.landing.x, 12);
+  expect(b + d * .5 + f).toBeCloseTo(move.geometry.landing.y, 12);
+  await page.getByText('Geometric provenance', {exact: true}).click();
+  await expect(page.locator('#geometry-report')).toContainText('Unverified');
+  await verifyReplayAndUndo(page, experiment);
+  const tampered = structuredClone(experiment);
+  tampered.attempts.at(-1).move.geometry.branch = 'before-foot';
+  await page.locator('#import-file').setInputFiles({
+    name: 'wrong-branch.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(tampered)),
+  });
+  await expect(page.locator('#notice')).toContainText('does not match the selected line or solution branch');
 });
 
 test('pointer-only hold and drag commits the unique equilateral landing on release', async ({page}) => {
@@ -1169,8 +1193,11 @@ test('synthetic equilateral gestures distinguish a certified horizontal from a c
   await expect(page.locator('#geometry-dependencies')).toHaveText('References · step:3:landing, step:1:axis');
   const certified = await downloadJSON(page, 'Export experiment');
   expect(certified.attempts.map(({move}) => move.geometry?.kind))
-    .toEqual(['vertex-bisector', undefined, 'equilateral-o5', 'perpendicular-through']);
-  expect(certified.attempts[2].move.geometry).toMatchObject({branch: 'above-pin', target: {facetId: 0, crease: 0}});
+    .toEqual(['vertex-bisector', undefined, 'point-on-line', 'perpendicular-through']);
+  expect(certified.attempts[2].move.geometry).toMatchObject({
+    branch: 'before-foot', target: {facetId: 0, crease: 0},
+    pin: {material: {corner: 'A'}}, moving: {material: {corner: 'B'}},
+  });
   const horizontal = certified.attempts.at(-1);
   expect(horizontal.move.geometry).toMatchObject({pin: {corner: 'B'}, source: {facetId: 0, crease: 0}});
   expect(horizontal.validation.status).toBe('accepted');

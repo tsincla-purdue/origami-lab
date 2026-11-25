@@ -44,7 +44,41 @@ describe('geometric evidence in experiment files', () => {
     const experiment = equilateral({kind: 'freehand'});
     expect(experiment.final).toEqual(equilateral().final);
     expect(inspectGeometry(experiment).map(({status}) => status)).toEqual(['unverified', 'unverified', 'unverified']);
-    expect(experiment.attempts[2].move).not.toHaveProperty('geometry');
+    const replayed = importExperiment(serializeExperiment(experiment));
+    expect(replayed.attempts[2]).toEqual(experiment.attempts[2]);
+    expect(replayed.attempts[2].move).toMatchObject({geometry: {version: 1, ...upper}});
+    expect(inspectGeometry(replayed)[2]).toMatchObject({status: 'unverified', detail: expect.stringContaining('no exact proof')});
+  });
+
+  it('imports 250 physical operations when the last proof exceeds the node budget', () => {
+    const options = {maxDerivedNodes: 124};
+    let experiment = createExperiment();
+    for (let i = 0; i < 125; i++) {
+      experiment = recordUnfold(recordGestureMove(experiment, center, bisector));
+    }
+    const text = serializeExperiment(experiment);
+    const replayed = importExperiment(text, options);
+    expect(serializeExperiment(replayed)).toBe(text);
+    expect(replayed.attempts).toHaveLength(250);
+    expect(replayed.attempts[248].validation.status).toBe('accepted');
+    expect(replayed.attempts[248].move).toHaveProperty('geometry.kind', 'vertex-bisector');
+    const reports = inspectGeometry(replayed, options);
+    expect(reports[246].status).toBe('certified');
+    expect(reports[248]).toMatchObject({status: 'inconclusive', detail: expect.stringContaining('budget')});
+    expect(inspectGeometry(replayed)[248].status).toBe('certified');
+  });
+
+  it('retains inconclusive dependencies and still checks malformed evidence after budget exhaustion', () => {
+    const options = {maxDerivedNodes: 0};
+    const experiment = equilateral();
+    const text = serializeExperiment(experiment);
+    const replayed = importExperiment(text, options);
+    expect(inspectGeometry(replayed, options).map(({status}) => status)).toEqual(['inconclusive', 'unverified', 'inconclusive']);
+    expect(serializeExperiment(replayed)).toBe(text);
+
+    const tampered = JSON.parse(text);
+    tampered.attempts[2].move.geometry.branch = 'below-pin';
+    expect(() => importExperiment(JSON.stringify(tampered), options)).toThrow(/Geometric evidence at attempt 3/);
   });
 
   it('can report a checked planar constraint independently of a refused move', () => {
@@ -73,7 +107,13 @@ describe('geometric evidence in experiment files', () => {
       geometry: {version: 1, ...bisector, projection: {axis: [[.501, 0], [.501, 1]], side: -1}}};
     const experiment = createExperiment();
     expect(validate(experiment.initial, move).status).toBe('accepted');
-    expect(() => recordMove(experiment, move)).toThrow(/inconsistent with the exact constraint/);
+    expect(() => recordMove(experiment, move)).toThrow(/inconsistent with the selected reflection/);
+    const {geometry: _geometry, ...physicalMove} = move;
+    const recorded = recordGestureMove(experiment, physicalMove, bisector);
+    expect(recorded.attempts[0].validation.status).toBe('accepted');
+    expect(recorded.attempts[0].move).toEqual(move);
+    expect(inspectGeometry(recorded)[0].status).toBe('invalid');
+    expect(() => importExperiment(serializeExperiment(recorded))).toThrow(/inconsistent with the selected reflection/);
   });
 });
 

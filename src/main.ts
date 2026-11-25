@@ -10,7 +10,7 @@ import {
 import type { Experiment, Move, PaperStyle, Validation } from './lab';
 import { MAX_EXPERIMENT_LENGTH, recordGestureMove } from './lab/experiment';
 import { inspectGeometry, type CapturedGeometry, type GeometryReport } from './lab/proof-geometry';
-import { connectGestures, type ConstraintIssue, type CornerSelection, type Draft, type Tool } from './playground/gestures';
+import { connectGestures, draftCapture, type ConstraintIssue, type CornerSelection, type Draft, type Tool } from './playground/gestures';
 import { interpretDraft, type Interpretation } from './playground/intent';
 import {
   constraintMarkup, cornerHandles, faceColor, lineHandles, markHandles, markMarkup, markSelection,
@@ -259,7 +259,7 @@ function clearGesture() {
 function finishDraft() {
   const option = picked();
   if (editable() && pending && gestures.canConfirm(pending) && option?.result.validation.status === 'accepted') {
-    commitMove(option.move, option.draft.capture);
+    commitMove(option.move, draftCapture(option.draft));
   }
 }
 
@@ -389,7 +389,7 @@ function renderHistory() {
   }
   const {status, detail, dependencies} = geometryReports[cursor - 1];
   const label = status === 'certified' ? 'Certified' : status === 'near-match' ? 'Near match'
-    : status === 'inconclusive' ? 'Inconclusive' : 'Unverified';
+    : status === 'inconclusive' ? 'Inconclusive' : status === 'invalid' ? 'Invalid' : 'Unverified';
   get('geometry-report').textContent = `${label}. ${detail}`;
   get('geometry-dependencies').textContent = dependencies.length ? `References · ${dependencies.join(', ')}` : '';
 }

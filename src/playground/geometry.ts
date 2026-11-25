@@ -9,7 +9,7 @@ import { clipCrease, facetCreaseSegments } from '../lab/crease-references';
 import { materialIntersectionDetails, segmentIntersection, visibleMaterialMarks } from '../lab/material-points';
 import { containsLinePoint } from '../lab/line-constraints';
 import { CORNERS, squareVertices } from '../lab/proof-graph';
-import type { CreaseReference, VertexReference } from '../lab/proof-geometry';
+import type { CreaseReference, SelectedLine, SelectedPoint, VertexReference } from '../lab/geometry-intent';
 import { lineKey, pointKey, releaseRadius, selectSnap } from './snap-selection';
 
 export const CORNER_HIT_RADIUS = 22;
@@ -122,7 +122,8 @@ export function paperGeometry(paper: PaperState) {
     const world = currentPolygon(facet);
     return {facet, world, poly: orientCCW(world), creases: facetCreaseSegments(state, facet)};
   });
-  const marked = visibleMaterialMarks(state).map(({position}) => position);
+  const marks = visibleMaterialMarks(state);
+  const marked = marks.map(({position}) => position);
   const corners: Vec[] = [];
   const vertexRefs = new Map<Vec, VertexReference>();
   for (const [index, {poly, facet, world}] of faces.entries()) {
@@ -170,11 +171,26 @@ export function paperGeometry(paper: PaperState) {
       return segments.map(segment => lineReference(segment, layer, index));
     });
   }
+  function pointReference(point: Vec, facetId?: number): SelectedPoint {
+    const vertex = vertexRefs.get(point);
+    const mark = marks.find(({position}) => position === point);
+    const face = faces.find(({facet, poly}) =>
+      (facetId ?? vertex?.facetId ?? facet.id) === facet.id && location(poly, point) &&
+      (!mark || location(orientCCW(facet.poly), mark.point)));
+    if (!face) return {point};
+    const corner = vertex?.facetId === face.facet.id ? vertex.corner : undefined;
+    const material = corner ? {x: squareVertices[corner][0], y: squareVertices[corner][1]}
+      : mark?.point ?? apply(invert(face.facet.transform), point);
+    return {point, material: {facetId: face.facet.id, point: material,
+      ...(corner && {corner}), ...(mark && {markId: mark.id})}};
+  }
   return {
     corners,
     marked,
     vertexReference: (point: Vec) => vertexRefs.get(point),
     creaseReference: (reference: LineReference) => creaseRefs.get(reference),
+    lineReference: (reference: LineReference): SelectedLine => ({...reference, ...creaseRefs.get(reference)}),
+    pointReference,
     contains: (point: Vec) => hit(point) !== undefined,
     markOptions(screen: Vec, transform: Mat, radius: number, locked?: MarkOption): MarkOption[] {
       const world = apply(invert(transform), screen);
