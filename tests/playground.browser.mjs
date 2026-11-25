@@ -110,6 +110,21 @@ test.beforeEach(async ({page}) => {
   await page.locator('#paper').scrollIntoViewIfNeeded();
 });
 
+test('places unfold, flip, and pin together above the sheet, separate from history', async ({page}) => {
+  const actions = page.getByRole('group', {name: 'Paper actions'});
+  await expect(actions.getByRole('button')).toHaveCount(3);
+  expect(await actions.locator('button').evaluateAll(buttons => buttons.map(button => button.id))).toEqual([
+    'unfold', 'flip-paper', 'pin-point',
+  ]);
+  await expect(page.locator('.history-controls #unfold')).toHaveCount(0);
+  await expect(page.getByRole('button', {name: 'Unfold', exact: true})).toBeDisabled();
+  await dragCorner(page, [1, 0], [0, 0]);
+  await expect(page.getByRole('button', {name: 'Unfold', exact: true})).toBeEnabled();
+  await actions.getByRole('button', {name: 'Unfold', exact: true}).click();
+  const saved = await downloadJSON(page, 'Export experiment');
+  expect(saved.attempts.at(-1)?.operation).toBe('unfold');
+});
+
 test('turns a two-tone half-fold over, folds the exposed layer, and turns it back', async ({page}) => {
   const flip = page.getByRole('button', {name: 'Flip over', exact: true});
   const unfold = page.getByRole('button', {name: 'Unfold', exact: true});
