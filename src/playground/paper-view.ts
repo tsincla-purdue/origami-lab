@@ -2,7 +2,7 @@ import { add, clipPolygon, lineDirection, scale, type Line, type Polygon, type V
 import { currentPolygon, isFlipped } from '../../vendor/origamio/src/paper';
 import { visibleMaterialMarks, type MaterialPacket, type PaperState, type PaperStyle } from '../lab';
 import { facetCreases } from '../lab/crease-references';
-import { CORNER_HIT_RADIUS, LINE_GRAB_RADIUS } from './geometry';
+import { CORNER_HIT_RADIUS, LINE_GRAB_RADIUS, type MarkOption } from './geometry';
 import type { ConstraintIssue, CornerSelection, Draft } from './gestures';
 
 type Face = 'front' | 'back';
@@ -96,7 +96,7 @@ function perpendicularMarker(draft: Draft, source: Line, unit: number) {
 export function constraintMarkup(pin: Vec | undefined, draft: Draft | undefined, issue: ConstraintIssue | undefined, landings: readonly Vec[], unit: number) {
   const constraint = draft?.constraint;
   const line = constraint?.target ?? issue?.target;
-  const source = draft?.lineIntent?.source.line ?? issue?.source;
+  const source = draft?.lineIntent?.source.line ?? draft?.source ?? issue?.source;
   const others = new Set(landings);
   if (draft) others.delete(draft.destination);
   const alternatives = [...others].map(point => circle(point, 6 * unit, 'alternative-landing')).join('');
@@ -125,8 +125,11 @@ export function markMarkup(state: PaperState, unit: number, unfolded = false): s
     `<circle class="material-mark" data-mark-id="${id}" cx="${position.x}" cy="${position.y}" r="${3.5 * unit}"/>`).join('');
 }
 
-export function markSelection(point: Vec | undefined, unit: number): string {
-  return point ? circle(point, 8 * unit, 'intersection-selection') : '';
+export function markSelection(option: MarkOption | undefined, unit: number, ghost = false): string {
+  if (!option) return '';
+  return `<g data-facet-id="${option.facetId}" data-layer="${option.rank}">` +
+    option.references.map(({a, b}) => segment(a, b, 'intersection-reference')).join('') +
+    circle(option.position, 8 * unit, ghost ? 'intersection-ghost' : 'intersection-selection') + '</g>';
 }
 
 export type FoldGuide = Pick<Draft, 'line' | 'side'> & Partial<Pick<Draft, 'anchor' | 'destination' | 'snapped' | 'creaseSnapped'>>;

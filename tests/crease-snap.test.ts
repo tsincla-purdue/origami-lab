@@ -2,17 +2,29 @@ import { describe, expect, it } from 'vitest';
 import { perpendicularBisector, type Vec } from '../vendor/origamio/src/geometry';
 import { createExperiment, recordMove, recordUnfold } from '../src/lab';
 import { paperGeometry } from '../src/playground/geometry';
-import { snapCrease } from '../src/playground/crease-snap';
+import { creasePairs } from '../src/playground/crease-snap';
+import { lineKey, selectSnap } from '../src/playground/snap-selection';
 
 const moving = {x: 0, y: 0};
 const edgePoints = (y: number) => [{x: 0, y}, {x: 1, y}] as const;
 const match = (y: number, points: readonly Vec[], pixelsPerUnit = 100, locked?: {a: Vec; b: Vec}) => {
   const destination = {x: 0, y: 2 * y};
   const screen = {a: pixelsPerUnit, b: 0, c: 0, d: -pixelsPerUnit, e: 25, f: 100};
-  return snapCrease(perpendicularBisector(moving, destination), moving, destination, points, screen, 8, locked);
+  return selectSnap(creasePairs(perpendicularBisector(moving, destination), points, screen, 8, moving,
+    {x: 25, y: 100 - destination.y * pixelsPerUnit}), 8, locked && `axis/${lineKey(locked)}`)[0]?.solution;
 };
 
 describe('two-point drag snapping', () => {
+  it('keeps a lock beyond acquisition and exposes a nearby rival until deliberate pull-away', () => {
+    const candidates = (a: number, b: number) => [
+      {key: 'a', value: 'first mark', score: a}, {key: 'b', value: 'second mark', score: b},
+    ];
+    const choose = (a: number, b: number, locked?: string) => selectSnap(candidates(a, b), 10, locked).map(({key}) => key);
+    expect(choose(4, 5)).toEqual(['a', 'b']);
+    expect(choose(11, 3, 'a')).toEqual(['a', 'b']);
+    expect(choose(16, 3, 'a')).toEqual(['b']);
+    expect(choose(16, 12, 'a')).toEqual([]);
+  });
   it('uses screen pixels for proximity and merges collinear reference pairs', () => {
     const points = [...edgePoints(.5), {x: .5, y: .5}];
     expect(match(.55, points)?.line).toEqual({a: points[0], b: points[1]});
@@ -25,11 +37,11 @@ describe('two-point drag snapping', () => {
     expect(match(.5, [{x: .6, y: .46}, {x: 1, y: .54}])).toBeUndefined();
   });
 
-  it('requires a clear winner, then retains that line until it leaves the release band', () => {
+  it('retains an acquired line until it leaves the release band', () => {
     const lower = edgePoints(.45);
     const upper = edgePoints(.55);
     const points = [...lower, ...upper];
-    expect(match(.5, points)).toBeUndefined();
+    expect(match(.5, points)).toBeDefined();
     const first = match(.46, points)!;
     expect(first.line).toEqual({a: lower[0], b: lower[1]});
     expect(match(.52, points)?.line).toEqual({a: upper[0], b: upper[1]});

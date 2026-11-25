@@ -27,7 +27,7 @@ export function segmentIntersection(first: Line, second: Line): Vec | undefined 
 }
 
 /** Exact intersections on the original sheet, within a material-space search radius. */
-export function materialIntersections(state: PaperState, near: Vec, radius: number): Vec[] {
+export function materialIntersectionDetails(state: PaperState, near: Vec, radius: number) {
   if (!near || !Number.isFinite(near.x) || !Number.isFinite(near.y) || radius < 0 || !Number.isFinite(radius)) return [];
   const {width, height} = state;
   const corners = [{x: 0, y: 0}, {x: width, y: 0}, {x: width, y: height}, {x: 0, y: height}];
@@ -36,11 +36,11 @@ export function materialIntersections(state: PaperState, near: Vec, radius: numb
   const creases = state.creases.filter(({a, b}) =>
     Math.min(a.x, b.x) <= near.x + limit && Math.max(a.x, b.x) >= near.x - limit &&
     Math.min(a.y, b.y) <= near.y + limit && Math.max(a.y, b.y) >= near.y - limit);
-  const points: Vec[] = [];
+  const points: {point: Vec; references: readonly Line[]}[] = [];
   function include(first: Line, second: Line) {
     const point = segmentIntersection(first, second);
-    if (point && distance(point, near) <= radius && !points.some(other => distance(other, point) <= EPS)) {
-      points.push(point);
+    if (point && distance(point, near) <= radius && !points.some(other => distance(other.point, point) <= EPS)) {
+      points.push({point, references: [first, second]});
     }
   }
   // Prefer the coordinate on the actual paper edge when several pairs meet there.
@@ -48,7 +48,11 @@ export function materialIntersections(state: PaperState, near: Vec, radius: numb
   for (const [index, first] of creases.entries()) {
     for (let i = index + 1; i < creases.length; i++) include(first, creases[i]);
   }
-  return points.sort((a, b) => distance(a, near) - distance(b, near));
+  return points.sort((a, b) => distance(a.point, near) - distance(b.point, near));
+}
+
+export function materialIntersections(state: PaperState, near: Vec, radius: number): Vec[] {
+  return materialIntersectionDetails(state, near, radius).map(({point}) => point);
 }
 
 /** A mark belongs to material, so splitting or restoring a facet does not change its identity. */

@@ -128,7 +128,7 @@ function drawOverlay() {
   layer.innerHTML = (selection ? packetMarkup(state, selection, guide, unit, option?.move.packet) : '') +
     previewMarkup(state, guide, endpoint, hoverCorner, unit, !selection) +
     constraintMarkup(gestures.pinned(), option?.draft ?? pending, constraintIssue, landings, unit) +
-    markSelection(selectedMark()?.position, unit);
+    markSelection(selectedMark() ?? gestures.markGhost(), unit, !selectedMark());
 }
 
 function displayPacketControls() {
@@ -174,7 +174,12 @@ function gestureStatus() {
   const pin = gestures.pinned();
   const explanation = verdict?.status === 'accepted' && pending?.lineIntent?.kind === 'perpendicular-point'
     ? 'The crease passes through the pin at a right angle to the grabbed line.' : verdict?.reason;
-  const message = explanation ?? constraintIssue?.reason ?? (creaseView ? 'Switch to Folded to use the fold tools.' :
+  const snap = picked()?.draft.snapLabel ?? pending?.snapLabel;
+  const intersection = selectedMark() ?? gestures.markGhost();
+  const message = snap && (!verdict || verdict.status === 'accepted')
+    ? `${snap}. ${pending?.side === undefined ? 'Tap the side to move.' : explanation ?? ''}`.trim()
+    : explanation ?? constraintIssue?.reason ?? (intersection ? `Exact intersection on layer ${intersection.rank}.` :
+    creaseView ? 'Switch to Folded to use the fold tools.' :
     !atTip() ? 'Return to the last history step to continue folding.' :
     pending?.tool === 'crease' ? 'Tap the side of the line you want to move.' :
     pin ? 'Drag a point along its line, or toward another visible crease or edge.' :
@@ -205,12 +210,17 @@ function gestureStatus() {
     const pointKey = ({x, y}: Vec) => `${x},${y}`;
     const landings = new Set(interpretations.map(({draft}) => pointKey(draft.destination)));
     const hasPacketChoice = landings.size < interpretations.length;
-    get('solution-label').textContent = landings.size === 1 ? 'Moving packet'
+    get('solution-label').textContent = pending?.alternatives?.length ? 'Snap target' : landings.size === 1 ? 'Moving packet'
       : hasPacketChoice || pending?.lineIntent ? 'Fold preview' : 'Landing point';
     const labels = interpretations.map(({draft, move}) => {
       const {x, y} = draft.destination;
       const location = `(${x.toFixed(3)}, ${y.toFixed(3)})`;
       const material = `${move.packet?.facetIds.length ?? experiment.final.facets.length} connected facets`;
+      if (pending?.alternatives?.length) {
+        const target = draft.lineIntent?.kind === 'align-lines' ? ` · target facet ${draft.lineIntent.target.facetId}` : '';
+        const axis = [draft.line.a, draft.line.b].map(({x, y}) => `(${x.toFixed(3)}, ${y.toFixed(3)})`).join(' → ');
+        return `${move.label} · ${axis}${target}`;
+      }
       return landings.size === 1 ? material : hasPacketChoice ? `${location} · ${material}` : location;
     });
     if (labels.join() !== [...solutionChoice.options].map(option => option.text).join()) {
@@ -253,8 +263,8 @@ function finishDraft() {
 function settleDraft(draft: Draft) {
   const verdict = picked()?.result.validation;
   if (verdict?.status === 'accepted') {
-    if (interpretations.length === 1 && !(draft.constraint && gestures.pinNeedsConfirmation())) finishDraft();
-  } else if (!draft.constraint) {
+    if (!draft.alternatives?.length && interpretations.length === 1 && !(draft.constraint && gestures.pinNeedsConfirmation())) finishDraft();
+  } else if (!draft.constraint && !draft.alternatives?.length) {
     gestureFeedback = verdict;
     gestures.cancel();
   }
