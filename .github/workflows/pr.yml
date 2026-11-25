@@ -1,0 +1,33 @@
+name: Verify pull request
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04 # Supported by the locked Playwright release.
+    timeout-minutes: 15
+    env:
+      ORIGAMI_BASE_PATH: /origami-lab/
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Audit exported experiments
+        run: python3 -B tests/audit/test_audit.py
+      - name: Install Chromium
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Browser tests and export audit
+        run: npx --no-install playwright test
+        env:
+          ORIGAMI_AUDIT_EXPORTS: '1'
