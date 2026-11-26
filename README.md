@@ -312,8 +312,13 @@ with no guarantee for finite-thickness paper.
 
 For a partial move, the moving pieces must be connected by material edges.
 The packet must be exposed on the side it swings through at the start, and
-unselected paper must clear the fixed hinge. A stationary sheet may cross the
-projection of a new crease when both incident pieces come from the same facet
+unselected paper must clear the fixed hinge. An automatic grab considers
+carrying an overlying ply that overlaps the moving half-plane, even when its
+old attachment stays entirely on the fixed side. The validator checks the
+resulting packet under the same motion rules.
+
+A stationary sheet may cross the projection of a new crease when both
+incident pieces come from the same facet
 and the stationary sheet stays on the opposite side of both pieces at launch
 and landing. In the open interval of rotation,
 off-axis moving points are off the stationary plane. At landing the packet

@@ -1,4 +1,4 @@
-import { EPS, apply, clipPolygon, signedDistance, type Line, type Side } from '../../vendor/origamio/src/geometry';
+import { AREA_EPS, EPS, apply, area, clipPolygon, intersectConvex, signedDistance, type Line, type Side } from '../../vendor/origamio/src/geometry';
 import { currentPolygon, type PaperState } from '../../vendor/origamio/src/paper';
 import { hinges } from '../../vendor/origamio/src/rigid';
 import type { MaterialPacket } from './packets';
@@ -20,15 +20,20 @@ export function packetCandidates(paper: PaperState, local: readonly MaterialPack
   const state = paperInView(paper);
   const top = local[0].facetIds[0];
   const facets = new Map(state.facets.map(facet => [facet.id, facet]));
-  const active = new Set(state.facets.filter(facet => {
+  const moving = state.facets.flatMap(facet => {
     const cut = clipPolygon(currentPolygon(facet), axis);
-    return (side === 1 ? cut.positive : cut.negative).length > 0;
-  }).map(facet => facet.id));
+    const poly = side === 1 ? cut.positive : cut.negative;
+    return poly.length ? [{id: facet.id, z: facet.z, poly}] : [];
+  });
+  const active = new Set(moving.map(facet => facet.id));
   const required = new Map<number, number[]>();
   const joins = new Map<number, number[]>();
   function link(graph: Map<number, number[]>, p: number, q: number) {
     graph.set(p, [...(graph.get(p) ?? []), q]);
-    graph.set(q, [...(graph.get(q) ?? []), p]);
+  }
+  function carry(p: number, q: number) {
+    link(required, p, q);
+    link(joins, p, q);
   }
   for (const {p, q, a, b} of hinges(state)) {
     if (!active.has(p) || !active.has(q)) continue;
@@ -37,10 +42,19 @@ export function packetCandidates(paper: PaperState, local: readonly MaterialPack
     // An attachment off the axis must move with the packet. A hinge on the axis
     // can connect a larger interpretation, but need not move with the first flap.
     if (reach.some(value => value > EPS)) {
-      link(required, p, q);
-      link(joins, p, q);
+      carry(p, q);
+      carry(q, p);
     } else if (reach.every(value => Math.abs(value) <= EPS)) {
       link(joins, p, q);
+      link(joins, q, p);
+    }
+  }
+  // An overlying ply can obstruct the swing even when its old weld lies
+  // entirely on the fixed side. Propose carrying it with the lower paper.
+  // The reverse dependency would incorrectly pick up lower, stationary plies.
+  for (const lower of moving) {
+    for (const upper of moving) {
+      if (upper.z > lower.z && area(intersectConvex(lower.poly, upper.poly)) > AREA_EPS) carry(lower.id, upper.id);
     }
   }
 

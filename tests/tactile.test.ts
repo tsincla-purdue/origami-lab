@@ -109,18 +109,17 @@ it('acquires a precise corner snap once, holds through jitter and emits a discre
 });
 
 it('feels an exact snap separately from hinge resistance and preserves the refused paper', () => {
-  const half = recordMove(createExperiment(), vertical(.5));
-  const quarter = recordMove(half, horizontal(.5));
-  const session = createTactileSession(quarter);
-  session.hand.beginDrag(point(0, .5));
-  const aligned = session.hand.move(point(.25, .5));
+  const dog = recordMove(createExperiment(), {line: [[0, .02], [1, .82]], side: -1});
+  const session = createTactileSession(dog);
+  session.hand.beginDrag(point(1, .82));
+  const aligned = session.hand.move(point(1, 1.16));
   expect(aligned.snapped).toBe(true);
-  expect(aligned.events).toContainEqual(expect.objectContaining({kind: 'snap-acquired', constraint: 'point'}));
+  expect(aligned.events).toContainEqual(expect.objectContaining({kind: 'snap-acquired', constraint: 'axis'}));
   expect(aligned.events).toContainEqual(expect.objectContaining({kind: 'resistance', validation: {
     status: 'rejected', code: 'torn-hinge', reason: 'The fold would pull shared material edges apart.',
   }}));
   expect(session.hand.release().validation).toEqual(aligned.validation);
-  expect(session.experiment()).toBe(quarter);
+  expect(session.experiment()).toBe(dog);
 });
 
 it('retains the acquired line when a marked point becomes a plausible rival', () => {
