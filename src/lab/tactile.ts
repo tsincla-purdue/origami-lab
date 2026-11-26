@@ -3,7 +3,9 @@ import { createGestureInterpreter, type ConstraintIssue, type Draft } from '../p
 import type { SurfaceContact } from '../playground/geometry';
 import { commitInterpretation, interpretGesture, uniqueAccepted } from '../playground/intent';
 import type { Validation } from './engine';
-import { canFlip, openingMotions, recordFlip, recordMark, type Experiment } from './experiment';
+import {
+  activeFoldAttempts, canFlip, canUnfold, openingMotions, recordFlip, recordMark, recordUnfold, type Experiment,
+} from './experiment';
 import { paperInView } from './paper-pose';
 import { realizeMarkedPerpendicular } from './proof-geometry';
 
@@ -32,11 +34,12 @@ export interface TactileHand {
   release(): TactileFeedback;
   mark(): TactileFeedback;
   flip(): TactileFeedback;
+  unfold(): TactileFeedback;
 }
 
 export type TactileCommand =
   | {readonly kind: 'drag' | 'trace' | 'move'; readonly at: Vec}
-  | {readonly kind: 'release' | 'mark' | 'flip'};
+  | {readonly kind: 'release' | 'mark' | 'flip' | 'unfold'};
 
 export interface TactileTrajectory {
   readonly version: 1;
@@ -71,6 +74,7 @@ function run(hand: TactileHand, command: TactileCommand): TactileFeedback {
     case 'release': return hand.release();
     case 'mark': return hand.mark();
     case 'flip': return hand.flip();
+    case 'unfold': return hand.unfold();
   }
 }
 
@@ -251,6 +255,20 @@ export function createTactileSession(initial: Experiment, options: TactileOption
           verdict = experiment.attempts.at(-1)!.validation;
           syncPaper();
         }
+        break;
+      case 'unfold':
+        end();
+        if (!canFlip(experiment)) verdict = historyFull();
+        else if (canUnfold(experiment)) {
+          experiment = recordUnfold(experiment);
+          verdict = experiment.attempts.at(-1)!.validation;
+          syncPaper();
+        } else if (activeFoldAttempts(experiment).length) {
+          verdict = unverified('unfold-unverified', 'The latest active fold could not be verified for reversal.');
+        } else {
+          verdict = rejected('no-active-fold', 'There is no active fold to unfold.');
+        }
+        break;
     }
     if (verdict && verdict.status !== 'accepted') resistance(verdict);
     const feedback = {motor: position, proximity: mode === 'trace' ? surface.proximity : gestures.snapObservation().proximity,
@@ -273,6 +291,7 @@ export function createTactileSession(initial: Experiment, options: TactileOption
     release: () => command({kind: 'release'}),
     mark: () => command({kind: 'mark'}),
     flip: () => command({kind: 'flip'}),
+    unfold: () => command({kind: 'unfold'}),
   };
   return {
     hand,

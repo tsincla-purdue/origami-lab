@@ -13,6 +13,7 @@ its inputs and observations stay local.
 | `release()` | Lift the probe or try to commit the current fold or opening. |
 | `mark()` | Record the current traced intersection and its defining material lines. |
 | `flip()` | Turn the whole sheet over using the ordinary recorded operation. |
+| `unfold()` | Request the verified reversal of the latest active fold. |
 
 Motor positions use the displayed, y-up paper coordinates. One unit is the
 original square's side length. Positions may extend outside the sheet. Set
@@ -58,7 +59,17 @@ motor vocabulary. The tactile hand skips synthetic targets such as the
 bounding-box center. Resistance comes from the existing planar folding model,
 which does not simulate continuous 3D collisions.
 
-## Opening a flap
+## Opening and unfolding
+
+`hand.unfold()` uses the same availability and reversal as the human
+**Unfold** button. It works from either face, including for separately hinged
+portions of a compound fold. It ends the current grab or
+trace, clears any snap lock, and leaves the motor position in place. The
+result comes back as validation feedback. A refusal leaves the experiment
+unchanged and emits resistance. The certification covers the recorded reversal
+within the planar model. General continuous 3D paths are outside that scope.
+
+### Discovering an opening by dragging
 
 An ordinary drag can acquire an `opening` snap. The grab must belong to the
 exposed material of a recorded moving packet, and that packet must still have
@@ -77,9 +88,10 @@ Within a quarter of the snap radius of an opening landing, a drag resolves
 competing axes when the opening is more than one virtual pixel closer than
 every rival landing. The same hinge can still offer different moving packets.
 
-An opening records a regular `unfold` attempt and preserves the paper's
-creases and marks. Undo edits history. Undoing the opening restores the
-folded paper, while undoing the original fold removes the crease it created.
+Dragging to open a flap and calling `unfold()` each record a regular `unfold`
+attempt and preserve the paper's creases, marks, and current front/back pose.
+Undo is a history-editing operation available to the host. Undoing an opening
+restores the folded paper, while undoing the original fold removes its crease.
 
 This exploration starts with a blank square. It sweeps the flap toward its
 former side and waits for tactile acquisition, then sweeps the flat paper
@@ -137,8 +149,9 @@ search(session.hand);
 `session.trajectory()` optionally returns a separate versioned log of motor
 commands and their feedback. Recording defaults to off. It keeps a prefix of
 up to the configured number of commands (maximum 2048) and at most 4096
-events, with a `truncated` flag. `replayTactileTrajectory(initial, log)` runs
-the recorded commands again from the same starting experiment and recomputes
+events, with a `truncated` flag. An explicit unfold is logged as an `unfold`
+command under the same trajectory version. `replayTactileTrajectory(initial, log)`
+runs the recorded commands again from the same starting experiment and recomputes
 their feedback. Sensations and refused releases stay outside the canonical
 experiment export. Accepted folds, marks, and turnovers use the normal
 experiment format and replay.
