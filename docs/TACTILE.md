@@ -10,7 +10,7 @@ its inputs and observations stay local.
 | `beginTrace(at)` | Place a probe and sense the exposed material there. |
 | `beginDrag(at)` | Try to grab a visible corner, edge, crease, or marked point within the playground's hit bands. |
 | `move(to)` | Advance the active probe or grab along a straight segment. |
-| `release()` | Lift the probe or try to commit the current fold. |
+| `release()` | Lift the probe or try to commit the current fold or opening. |
 | `mark()` | Record the current traced intersection and its defining material lines. |
 | `flip()` | Turn the whole sheet over using the ordinary recorded operation. |
 
@@ -34,7 +34,7 @@ sampled at intervals of at most 2 virtual pixels.
   marked point, with events when the contact changes or ends. Feature contacts
   occur within 3 virtual pixels. Several events can occur during one move.
   Marking requires the probe to be at an eligible intersection when called.
-- `snap-acquired` identifies a point, line alignment, or axis constraint.
+- `snap-acquired` identifies a point, line alignment, axis, or opening constraint.
   The normal playground threshold is 13 virtual pixels on the candidate
   score. The snap remains locked out to 19.5 virtual pixels. `snap-lost`
   indicates that the lock broke or the grab ended. A loss and a new acquisition
@@ -54,9 +54,59 @@ contact. A turnover can expose those features. Dragging uses the same solver,
 snap selection, packet inference, validator, and recorder as the playground,
 with exposed references only. Preview choices that require human controls,
 such as explicitly selecting buried material or pinning, are outside this
-motor vocabulary. The tactile hand also skips synthetic targets such as the
-bounding-box center and inferred hinge landings. Resistance comes from the
-existing planar folding model, which does not simulate continuous 3D collisions.
+motor vocabulary. The tactile hand skips synthetic targets such as the
+bounding-box center. Resistance comes from the existing planar folding model,
+which does not simulate continuous 3D collisions.
+
+## Opening a flap
+
+An ordinary drag can acquire an `opening` snap. The grab must belong to the
+exposed material of a recorded moving packet, and that packet must still have
+its common hinge. The drag must pass to the other side of the hinge and approach
+the exact reflected landing. The same snap bands and hysteresis apply as for
+new folds. The hand receives the click and the validator result independently.
+A covered portion can block a packet even when its tip is exposed. A turnover
+can expose or hide the recorded moving face. A drag on the opposite leaf
+cannot reverse a hidden flap.
+
+Only the latest active fold has a verified reversal. Other intact hinges can
+click and report an unverified reversal. An accepted competing fold on a
+different axis or packet leaves the gesture undecided. Move the hand to
+resolve the competing proposals.
+
+An opening records a regular `unfold` attempt and preserves the paper's
+creases and marks. Undo edits history. Undoing the opening restores the
+folded paper, while undoing the original fold removes the crease it created.
+
+This exploration starts with a blank square. It sweeps the flap toward its
+former side and waits for tactile acquisition, then sweeps the flat paper
+for contact with the crease.
+
+```ts
+import {createExperiment, createTactileSession, type TactileHand} from '../src/lab';
+
+function explore(hand: TactileHand) {
+  hand.beginDrag({x: 1, y: 0});
+  hand.move({x: 0, y: 0});
+  if (hand.release().validation?.status !== 'accepted') return;
+
+  hand.beginDrag({x: 0, y: 0});
+  for (let step = 1; step <= 50; step++) {
+    const feedback = hand.move({x: step / 50, y: 0});
+    if (feedback.events.some(event => event.kind === 'snap-acquired' && event.constraint === 'opening')) {
+      if (hand.release().validation?.status !== 'accepted') return;
+      hand.beginTrace({x: .25, y: .6});
+      return hand.move({x: .75, y: .6}).events;
+    }
+  }
+  hand.release();
+}
+
+const initial = createExperiment();
+const discovery = createTactileSession(initial, {trajectoryLimit: 80});
+explore(discovery.hand);
+console.log(JSON.stringify(discovery.trajectory()));
+```
 
 ## Example controller
 

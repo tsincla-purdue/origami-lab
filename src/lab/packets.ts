@@ -48,8 +48,8 @@ export function cornerPackets(state: PaperState, point: Vec): MaterialPacket[] {
   return choices;
 }
 
-/** The exact opening destination of a corner when all packet attachments share an axis. */
-export function packetHingeLanding(state: PaperState, packet: MaterialPacket, corner: Vec): Vec | undefined {
+/** The hinge supporting the packet, when all its attachments share one axis. */
+export function packetHingeAxis(state: PaperState, packet: MaterialPacket): Line | undefined {
   const view = paperInView(state);
   const ids = new Set(packet.facetIds);
   const facets = new Map(view.facets.map(facet => [facet.id, facet]));
@@ -58,9 +58,13 @@ export function packetHingeLanding(state: PaperState, packet: MaterialPacket, co
     return { a: apply(transform, a), b: apply(transform, b) };
   });
   const axis = welds[0];
-  if (!axis || Math.abs(signedDistance(axis, corner)) <= EPS ||
-      welds.some(({a, b}) => [a, b].some(point => Math.abs(signedDistance(axis, point)) > EPS))) return;
-  return apply(reflection(axis), corner);
+  if (axis && welds.every(({a, b}) => [a, b].every(point => Math.abs(signedDistance(axis, point)) <= EPS))) return axis;
+}
+
+/** The exact opening destination of a corner when all packet attachments share an axis. */
+export function packetHingeLanding(state: PaperState, packet: MaterialPacket, corner: Vec): Vec | undefined {
+  const axis = packetHingeAxis(state, packet);
+  if (axis && Math.abs(signedDistance(axis, corner)) > EPS) return apply(reflection(axis), corner);
 }
 
 /** Use Origamio to split and reflect the selected material, then restore the stationary stack. */

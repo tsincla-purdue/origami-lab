@@ -143,6 +143,38 @@ test('the mouse and tactile hand commit the same snapped crease and material pac
   expect(pointer.final).toEqual(headless.experiment.final);
 });
 
+test('pulling an exposed flap back opens its hinge identically for the mouse and tactile hand', async ({page}) => {
+  await dragCorner(page, [1, 0], [0, 0]);
+  const folded = await downloadJSON(page, 'Export experiment');
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  const from = [0, 0], to = [.98, .006];
+  const headless = await page.evaluate(async ({folded, from, to}) => {
+    const {createTactileSession, importExperiment, serializeExperiment} =
+      await import(new URL('./api/index.js', location.href).href);
+    const {a, b} = document.querySelector('#paper-scene').getScreenCTM();
+    const session = createTactileSession(importExperiment(JSON.stringify(folded)), {pixelsPerUnit: Math.hypot(a, b)});
+    session.hand.beginDrag({x: from[0], y: from[1]});
+    const approach = session.hand.move({x: to[0], y: to[1]});
+    const release = session.hand.release();
+    return {approach, release, experiment: JSON.parse(serializeExperiment(session.experiment()))};
+  }, {folded, from, to});
+  expect(headless.approach.events).toContainEqual(expect.objectContaining({kind: 'snap-acquired', constraint: 'opening'}));
+  expect(headless.release.validation).toMatchObject({status: 'accepted', code: 'unfold'});
+
+  await startMouseDrag(page, from, to);
+  await expect(page.locator('#gesture-reason')).toContainText('Open flap');
+  await expect(page.locator('.packet-moving')).toHaveAttribute('data-facet-id', '1');
+  await expect(page.locator('.drag-destination')).toHaveAttribute('cx', '1');
+  await expect(page.locator('.fold-endpoint .paper-facet')).toHaveCount(1);
+  await page.mouse.up();
+  const pointer = await downloadJSON(page, 'Export experiment');
+  expect(pointer).toEqual(headless.experiment);
+  expect(pointer.attempts[1]).toMatchObject({operation: 'unfold', move: {foldAttempt: 1}});
+  expect(pointer.final.creases).toEqual(folded.final.creases);
+  expect(pointer.final.facets).toEqual(folded.initial.facets);
+  await verifyReplayAndUndo(page, pointer);
+});
+
 test('previews the exact crease-edge intersection on folded and turned material before marking', async ({page}) => {
   const unfold = page.getByRole('button', {name: 'Unfold', exact: true});
   await dragCorner(page, [0, 1], [0, 0]);
@@ -772,7 +804,7 @@ test('an explicitly selected flap stays fixed on rejection and pen taps cycle la
   await expect(page.locator('#packet-status')).toHaveText('1/2 layers');
   await tapCorner(page, [1, 0]);
   await expect(page.locator('#packet-status')).toHaveText('1/2 layers');
-  await startMouseDrag(page, [1, 0], [.02, 0]);
+  await startMouseDrag(page, [1, 0], [.52, 0]);
   await expect(page.locator('.snap-active')).toBeVisible();
   await expect(page.locator('#gesture-status')).toHaveText('accepted');
   await page.mouse.up();
@@ -798,7 +830,7 @@ test('deliberate repeated taps wrap through a four-layer stack and hold the pack
   }
   await expect(page.locator('.packet-highlight')).toHaveCount(2);
   await page.waitForTimeout(3600);
-  await dragCorner(page, [1, 1], [1, .02]);
+  await dragCorner(page, [1, 1], [1, .52]);
   await expect(page.locator('#history-count')).toHaveText('3 attempts');
   const experiment = await downloadJSON(page, 'Export experiment');
   expect(experiment.attempts[2].move.packet.facetIds).toEqual([2, 3]);
@@ -807,7 +839,7 @@ test('deliberate repeated taps wrap through a four-layer stack and hold the pack
   await expect(page.locator('#sheet-caption')).toHaveText('4 facets · 2 folds');
   await expect(page.getByRole('button', {name: 'Undo', exact: true})).toBeDisabled();
   await page.getByRole('button', {name: 'Replay', exact: true}).click();
-  await expect(page.locator('#sheet-caption')).toHaveText('4 facets · 3 folds');
+  await expect(page.locator('#sheet-caption')).toHaveText('6 facets · 3 folds');
   expect(await downloadJSON(page, 'Export experiment')).toEqual(experiment);
 });
 
@@ -836,8 +868,8 @@ test('Undo removes the last fold from history and export, then accepts a differe
   await dragCorner(page, [1, 1], [0, 1]);
   const first = await downloadJSON(page, 'Export experiment');
   await page.locator('#paper').scrollIntoViewIfNeeded();
-  await dragCorner(page, [0, 1], [1, 1]);
-  await expect(page.locator('#sheet-caption')).toHaveText('2 facets · 2 folds');
+  await dragCorner(page, [0, 1], [.33, 1]);
+  await expect(page.locator('#sheet-caption')).toHaveText('3 facets · 2 folds');
   const originalSecond = (await downloadJSON(page, 'Export experiment')).attempts[1].move;
 
   await undo.click();
@@ -1043,9 +1075,11 @@ test('two admissible packets offer previews and prefer the smaller one', async (
   await page.mouse.up();
   await expect(page.locator('#history-count')).toHaveText('2 attempts');
   const choice = page.getByRole('combobox', {name: 'Moving packet', exact: true});
-  await expect(choice.locator('option')).toHaveText(['2 connected facets', '3 connected facets']);
+  await expect(choice.locator('option')).toHaveText(['Open flap · 2 connected facets', '3 connected facets']);
   await expect(choice).toHaveValue('0');
+  await expect(page.locator('#gesture-reason')).toContainText('Open flap');
   await choice.selectOption('1');
+  await expect(page.locator('#gesture-reason')).not.toContainText('Open flap');
   await expect(page.locator('.packet-moving')).toHaveCount(3);
   await expect(page.locator('.preview-line')).toHaveAttribute('x1', axis);
   await page.getByRole('button', {name: 'Confirm fold'}).click();
@@ -1665,6 +1699,25 @@ test('paper preference survives reload and presets, and round-trips through expo
 test.describe('touch', () => {
   const { defaultBrowserType, ...touchDevice } = devices['iPhone 13'];
   test.use(touchDevice);
+
+  test('an ordinary touch drag opens the half-fold from its free edge', async ({page, context}) => {
+    const session = await context.newCDPSession(page);
+    const touch = (type, point) => session.send('Input.dispatchTouchEvent', {type, touchPoints: point ? [point] : []});
+    await touch('touchStart', await screenPoint(page, 1, 0));
+    await touch('touchMove', await screenPoint(page, 0, 0));
+    await touch('touchEnd');
+    await expect(page.locator('#history-count')).toHaveText('1 attempt');
+
+    await touch('touchStart', await screenPoint(page, 0, .41));
+    await touch('touchMove', await screenPoint(page, .98, .41));
+    await expect(page.locator('#gesture-reason')).toContainText('Open flap');
+    await expect(page.locator('.drag-destination')).toHaveAttribute('cx', '1');
+    await touch('touchEnd');
+    const opened = await downloadJSON(page, 'Export experiment');
+    expect(opened.attempts[1]).toMatchObject({operation: 'unfold', move: {foldAttempt: 1}});
+    expect(opened.final.creases).toEqual(opened.attempts[0].state.creases);
+    expect(opened.final.facets).toEqual(opened.initial.facets);
+  });
 
   test('touch previews an intersection and transfers a grabbed edge point to its mark', async ({page, context}) => {
     const session = await context.newCDPSession(page);

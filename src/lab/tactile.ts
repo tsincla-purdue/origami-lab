@@ -1,14 +1,14 @@
 import { distance, lerp, scale, type Mat, type Vec } from '../../vendor/origamio/src/geometry';
-import { createGestureInterpreter, draftCapture, type ConstraintIssue, type Draft } from '../playground/gestures';
+import { createGestureInterpreter, type ConstraintIssue, type Draft } from '../playground/gestures';
 import type { SurfaceContact } from '../playground/geometry';
-import { interpretDraft, uniqueAccepted } from '../playground/intent';
+import { commitInterpretation, interpretGesture, uniqueAccepted } from '../playground/intent';
 import type { Validation } from './engine';
-import { canFlip, recordFlip, recordGestureMove, recordMark, type Experiment } from './experiment';
+import { canFlip, openingMotions, recordFlip, recordMark, type Experiment } from './experiment';
 import { paperInView } from './paper-pose';
 import { realizeMarkedPerpendicular } from './proof-geometry';
 
 export type TactileContact = SurfaceContact;
-export type TactileSnap = 'point' | 'line' | 'axis';
+export type TactileSnap = 'point' | 'line' | 'axis' | 'opening';
 export type TactileEvent =
   | {readonly kind: 'contact'; readonly motor: Vec; readonly contact: TactileContact}
   | {readonly kind: 'contact-lost' | 'snap-lost'; readonly motor: Vec}
@@ -102,15 +102,16 @@ export function createTactileSession(initial: Experiment, options: TactileOption
     transform: () => transform,
     exposedOnly: true,
     snapping: () => true,
+    openingMotions: () => openingMotions(experiment),
     show(next, _, problem) {
       draft = next;
       issue = problem;
     },
     commit(next) {
-      const interpretations = interpretDraft(experiment.final, next);
+      const interpretations = interpretGesture(experiment, next);
       const proposal = uniqueAccepted(next, interpretations);
       if (proposal && canFlip(experiment)) {
-        experiment = recordGestureMove(experiment, proposal.move, draftCapture(proposal.draft));
+        experiment = commitInterpretation(experiment, proposal);
         verdict = experiment.attempts.at(-1)!.validation;
       } else {
         verdict = proposal ? historyFull() : draftVerdict(interpretations[0]?.result.validation);
@@ -126,7 +127,7 @@ export function createTactileSession(initial: Experiment, options: TactileOption
     }
     return validation ?? (issue?.status === 'rejected'
       ? rejected('unsolved-gesture', issue.reason)
-      : unverified('unsolved-gesture', issue?.reason ?? 'No fold was proposed by this movement.'));
+      : unverified('unsolved-gesture', issue?.reason ?? 'No fold or opening was proposed by this movement.'));
   }
 
   function syncPaper() {
@@ -158,17 +159,18 @@ export function createTactileSession(initial: Experiment, options: TactileOption
     if (lock !== next) {
       if (lock) events.push({kind: 'snap-lost', motor: at});
       if (next) {
-        const constraint = next.startsWith('point/') ? 'point' : next.startsWith('line/') ? 'line' : 'axis';
+        const constraint = next.startsWith('opening/') ? 'opening'
+          : next.startsWith('point/') ? 'point' : next.startsWith('line/') ? 'line' : 'axis';
         events.push({kind: 'snap-acquired', motor: at, constraint});
       }
       lock = next;
       if (next && !last && draft) {
-        const result = interpretDraft(experiment.final, draft)[0]?.result.validation;
+        const result = interpretGesture(experiment, draft)[0]?.result.validation;
         if (result && result.status !== 'accepted') resistance(result, at);
       }
     }
     if (last && draft) {
-      const options = interpretDraft(experiment.final, draft);
+      const options = interpretGesture(experiment, draft);
       if (!uniqueAccepted(draft, options)) verdict = draftVerdict(options[0]?.result.validation);
     } else if (last && issue?.status) verdict = draftVerdict(undefined);
   }

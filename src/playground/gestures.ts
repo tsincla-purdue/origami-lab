@@ -1,7 +1,8 @@
 import {
-  EPS, add, apply, distance, dot, invert, sideOf, signedDistance, sub, type Line, type Mat, type Side, type Vec,
+  EPS, add, apply, distance, dot, invert, reflection, sideOf, signedDistance, sub, type Line, type Mat, type Side, type Vec,
 } from '../../vendor/origamio/src/geometry';
-import { cornerPackets, packetHingeLanding, type MaterialPacket } from '../lab/packets';
+import { connected, cornerPackets, packetHingeAxis, packetHingeLanding, type MaterialPacket } from '../lab/packets';
+import type { openingMotions } from '../lab/experiment';
 import { containsLinePoint, resolveLineFold, type LineFoldIntent, type LineReference } from '../lab/line-constraints';
 import { solvePointOntoLine, type ConstraintResult, type ConstraintSolution } from '../lab/constraints';
 import type { PaperState } from '../lab/engine';
@@ -30,6 +31,7 @@ export interface Draft {
   readonly snapLabel?: string;
   readonly alternatives?: readonly Draft[];
   readonly capture?: Exclude<CapturedGeometry, {kind: 'point-on-line'}> | PointOnLine;
+  readonly opening?: {readonly foldAttempt: number; readonly obstruction?: 'covered' | 'disconnected'};
 }
 
 export function draftCapture({capture, destination}: Draft): CapturedGeometry | undefined {
@@ -46,7 +48,7 @@ export interface ConstraintIssue {
 }
 
 export function draftMove(draft: Draft) {
-  if (draft.side === undefined) return;
+  if (draft.side === undefined || draft.opening) return;
   const label = draft.lineIntent?.kind === 'align-lines' ? 'Align lines'
     : draft.lineIntent ? 'Perpendicular through point'
     : draft.constraint ? 'Point onto line' : draft.snapLabel ?? (draft.creaseSnapped ? 'Crease through two points'
@@ -74,6 +76,7 @@ interface Drag {
   moved: boolean;
   tapOnly: boolean;
   hingeLandings: readonly Vec[];
+  openings: readonly Draft[];
   source?: LineReference;
   pointSources: readonly LineReference[];
   snapKey?: string;
@@ -100,6 +103,7 @@ export interface GestureCallbacks {
   snapping: () => boolean;
   show: (draft?: Draft, hover?: Vec, issue?: ConstraintIssue) => void;
   commit: (draft: Draft) => void;
+  openingMotions: () => ReturnType<typeof openingMotions>;
   markedPerpendicular: (moving: number, through: number, crease: number, facetId: number) =>
     {line: Line; landing: Vec} | undefined;
 }
@@ -157,7 +161,8 @@ export function createGestureInterpreter(callbacks: GestureCallbacks & {
   }
 
   function refreshHeld() {
-    if (held) held = { ...held, ...material() };
+    if (held?.opening || held?.alternatives?.some(option => option.opening)) held = undefined;
+    else if (held) held = { ...held, ...material() };
     callbacks.show(held, undefined, issue);
   }
 
@@ -219,7 +224,13 @@ export function createGestureInterpreter(callbacks: GestureCallbacks & {
   }
 
   function previewSnap(options: readonly SnapCandidate<Draft>[], radius: number, press: Drag): Draft | undefined {
-    const [primary, ...nearby] = selectSnap(options, radius, press.snapKey);
+    const openings = options.filter(option => option.value.opening);
+    // A fold onto the very same hinge is the geometric description of the opening.
+    // Keep separate axes in the normal competition and use the same hysteresis.
+    const candidatesForSnap = options.filter(({value}) => value.opening ||
+      !openings.some(option => (option.score <= radius || option.key === press.snapKey) &&
+        sameAxis(option.value.line, value.line)));
+    const [primary, ...nearby] = selectSnap(candidatesForSnap, radius, press.snapKey);
     if (exposedOnly) {
       const range = releaseRadius(radius);
       const score = options.reduce((best, option) => Math.min(best, option.score), range);
@@ -232,14 +243,25 @@ export function createGestureInterpreter(callbacks: GestureCallbacks & {
     const targetFacet = (draft: Draft) => draft.lineIntent?.kind === 'align-lines' ? draft.lineIntent.target.facetId : undefined;
     for (const {value} of candidates) {
       // The same motion may hit a mark and align its line. Keep the alignment's material reference.
-      const alignment = value.source && candidates.find(({value: option}) =>
+      const alignment = !value.opening && value.source && candidates.find(({value: option}) =>
         option.lineIntent?.kind === 'align-lines' && sameAxis(value.line, option.line));
-      const marked = candidates.find(({value: option}) =>
+      const marked = !value.opening && candidates.find(({value: option}) =>
         option.capture?.kind === 'marked-perpendicular' && sameAxis(value.line, option.line));
-      const draft = marked?.value ?? (alignment ? alignment.value : value);
+      const draft = marked ? marked.value : alignment ? alignment.value : value;
       if (!distinct.some(other => targetFacet(draft) === targetFacet(other) && sameAxis(draft.line, other.line))) distinct.push(draft);
     }
     return distinct.length > 1 ? {...distinct[0], alternatives: distinct.slice(1)} : distinct[0];
+  }
+
+  function openingCandidates(press: Drag, target: Vec, map: Mat, radius: number): SnapCandidate<Draft>[] {
+    return press.openings.flatMap(value => {
+      const destination = apply(map, value.destination);
+      const start = apply(map, press.anchor);
+      const axis = sub(destination, start);
+      const score = distance(target, destination);
+      if (score > releaseRadius(radius) || dot(sub(target, start), axis) <= dot(axis, axis) / 2) return [];
+      return [{key: `opening/${value.opening!.foldAttempt}`, score, value}];
+    });
   }
 
   function pointDrafts(press: Drag, target: Vec, map: Mat, points: readonly Vec[], radius: number) {
@@ -306,6 +328,7 @@ export function createGestureInterpreter(callbacks: GestureCallbacks & {
     const magnet = snapRadius(event.pointerType);
     const radius = event.pointerType === 'touch' ? 24 : 17;
     const snapping = callbacks.snapping() && !event.altKey;
+    const openings = snapping && !pin ? openingCandidates(drag, target, map, magnet) : [];
     if (!snapping) drag.snapKey = undefined;
     if (tool === 'corner' && pin && !snapping) {
       issue = {reason: 'Enable snapping to continue the pinned fold.'};
@@ -333,7 +356,7 @@ export function createGestureInterpreter(callbacks: GestureCallbacks & {
           return [{key: `line/${reference.facetId}/${lineKey(reference.line)}`, score, value}];
         });
         const points = pointDrafts(drag, target, map, geometry.marked, magnet);
-        const snapped = previewSnap([...lines, ...points], magnet, drag);
+        const snapped = previewSnap([...openings, ...lines, ...points], magnet, drag);
         if (snapped) issue = undefined;
         else issue ??= {source: source.line, reason: 'Drag toward a visible line or marked point.'};
         return snapped;
@@ -389,7 +412,7 @@ export function createGestureInterpreter(callbacks: GestureCallbacks & {
         // compare both constraints and let an already acquired axis hold through jitter.
         const candidates = points.some(({score}) => score <= magnet / 2) && !drag.snapKey?.startsWith('axis/')
           ? points : [...points, ...creases];
-        const snapped = previewSnap([...marked, ...candidates], magnet, drag);
+        const snapped = previewSnap([...openings, ...marked, ...candidates], magnet, drag);
         if (snapped) return snapped;
       }
       return fold && {...fold, tool, anchor, destination, snapped: [], capture: {kind: 'freehand'}, ...material()};
@@ -414,6 +437,26 @@ export function createGestureInterpreter(callbacks: GestureCallbacks & {
         snapped: [], capture: {kind: 'through-points', points}};
     }
     return {line: raw, tool, anchor: raw.a, destination, snapped: [], capture: {kind: 'freehand'}};
+  }
+
+  function openingDrafts(anchor: Vec, probe: Vec, source: LineReference | undefined): Draft[] {
+    const paper = geometry;
+    const current = state;
+    if (!paper || !current || tool !== 'corner' || pin || wholeStack) return [];
+    const facetId = paper.exposedFacet(anchor);
+    if (facetId === undefined || (source && source.facetId !== facetId) || !paper.sameSurface(anchor, probe)) return [];
+    const selected = packet();
+    return callbacks.openingMotions().flatMap(({foldAttempt, packet, line}) => {
+      const ids = new Set(packet.facetIds);
+      if (!ids.has(facetId) || (explicit && (!selected || selected.facetIds.length !== ids.size ||
+          selected.facetIds.some(id => !ids.has(id))))) return [];
+      const hinge = packetHingeAxis(current, packet);
+      if (!hinge || !sameAxis(hinge, line) || Math.abs(signedDistance(line, anchor)) <= EPS) return [];
+      const destination = apply(reflection(line), anchor);
+      const obstruction = !paper.packetExposed(ids) ? 'covered' : !connected(ids, current) ? 'disconnected' : undefined;
+      return [{tool, line, side: sideOf(line, anchor), anchor, destination, snapped: [destination], ...material(), packet,
+        snapLabel: 'Open flap', opening: {foldAttempt, obstruction}}];
+    });
   }
 
   function press(event: GesturePress) {
@@ -460,6 +503,7 @@ export function createGestureInterpreter(callbacks: GestureCallbacks & {
       moved: false,
       tapOnly,
       hingeLandings,
+      openings: tapOnly ? [] : openingDrafts(selectedPoint, point, lineGrab?.reference),
       source: lineGrab?.reference,
       pointSources,
     };

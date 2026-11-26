@@ -83,7 +83,10 @@ The opposite faces and layers become accessible for folding. The turn is
 recorded in the history and can be undone. Turning twice about the same
 center restores the previous view.
 
-Select **Unfold** to reverse the most recent active fold while keeping all
+Pull the free edge or corner of an exposed flap back across its hinge. When
+the **Open flap** preview snaps into place, release to open it. If the same
+drag could also fold a different packet, choose the intended preview before
+confirming. **Unfold** also reverses the most recent active fold while keeping all
 creases on the paper. After several folds, select it repeatedly to open them
 in reverse order, even after a turnover. For example, fold the square vertically in half and select
 **Unfold** to return to a flat square with a center crease.
