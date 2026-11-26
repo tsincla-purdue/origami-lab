@@ -119,6 +119,30 @@ test.beforeEach(async ({page}) => {
   await page.locator('#paper').scrollIntoViewIfNeeded();
 });
 
+test('the mouse and tactile hand commit the same snapped crease and material packet', async ({page}) => {
+  const from = [1, 0], to = [.017, .006];
+  const headless = await page.evaluate(async ({from, to}) => {
+    const {createExperiment, createTactileSession, serializeExperiment} =
+      await import(new URL('./api/index.js', location.href).href);
+    const {a, b} = document.querySelector('#paper-scene').getScreenCTM();
+    const session = createTactileSession(createExperiment(), {pixelsPerUnit: Math.hypot(a, b)});
+    session.hand.beginDrag({x: from[0], y: from[1]});
+    const approach = session.hand.move({x: to[0], y: to[1]});
+    const release = session.hand.release();
+    return {approach, release, experiment: JSON.parse(serializeExperiment(session.experiment()))};
+  }, {from, to});
+  expect(headless.approach.snapped).toBe(true);
+  expect(headless.release.validation.status).toBe('accepted');
+
+  await startMouseDrag(page, from, to);
+  await expect(page.locator('.snap-active')).toBeVisible();
+  await expect(page.locator('#gesture-status')).toHaveText(headless.release.validation.status);
+  await page.mouse.up();
+  const pointer = await downloadJSON(page, 'Export experiment');
+  expect(pointer.attempts).toEqual(headless.experiment.attempts);
+  expect(pointer.final).toEqual(headless.experiment.final);
+});
+
 test('previews the exact crease-edge intersection on folded and turned material before marking', async ({page}) => {
   const unfold = page.getByRole('button', {name: 'Unfold', exact: true});
   await dragCorner(page, [0, 1], [0, 0]);

@@ -2,7 +2,7 @@ import {
   add, apply, applyToLine, cross, distance, dot, lineDirection, signedDistance, sub,
   type Line, type Mat, type Vec,
 } from '../../vendor/origamio/src/geometry';
-import { solveCreaseThroughPoints, type ConstraintSolution } from '../lab';
+import { solveCreaseThroughPoints, type ConstraintSolution } from '../lab/constraints';
 import { lineKey, pointKey, releaseRadius, type SnapCandidate } from './snap-selection';
 
 /** Candidates share screen-space scores. The smallest useful reference separation avoids unstable axes. */

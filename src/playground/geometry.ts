@@ -4,10 +4,11 @@ import {
 } from '../../vendor/origamio/src/geometry';
 import { currentPolygon } from '../../vendor/origamio/src/paper';
 import { snapTargets } from '../../vendor/origamio/src/snap';
-import { paperInView, type LineReference, type Move, type PaperState } from '../lab';
+import type { Move } from '../lab/engine';
+import { paperInView, type PaperState } from '../lab/paper-pose';
 import { clipCrease, facetCreaseSegments } from '../lab/crease-references';
 import { materialIntersectionDetails, materialLine, segmentIntersection, visibleMaterialMarks, type IntersectionSources } from '../lab/material-points';
-import { containsLinePoint } from '../lab/line-constraints';
+import { containsLinePoint, type LineReference } from '../lab/line-constraints';
 import { CORNERS, squareVertices } from '../lab/proof-graph';
 import type { CreaseReference, SelectedLine, SelectedPoint, VertexReference } from '../lab/geometry-intent';
 import { lineKey, pointKey, releaseRadius, selectSnap } from './snap-selection';
@@ -116,14 +117,22 @@ export interface MarkOption {
   readonly markId?: number;
 }
 
+export type SurfaceContact = 'surface' | 'edge' | 'crease' | 'intersection' | 'mark';
+
 /** Stack order decides which projected corner can be picked at a shared screen position. */
-export function paperGeometry(paper: PaperState) {
+export function paperGeometry(paper: PaperState, exposedOnly = false) {
   const state = paperInView(paper);
   const faces = [...state.facets].sort((a, b) => b.z - a.z).map(facet => {
     const world = currentPolygon(facet);
     return {facet, world, poly: orientCCW(world), creases: facetCreaseSegments(state, facet)};
   });
-  const marks = visibleMaterialMarks(state);
+  const topLayer = (point: Vec) => faces.findIndex(({poly}) => location(poly, point));
+  const marks = visibleMaterialMarks(state).filter(({point, position}) => {
+    if (!exposedOnly) return true;
+    const face = faces[topLayer(position)];
+    return face && location(orientCCW(face.facet.poly), point) &&
+      distance(position, apply(face.facet.transform, point)) <= EPS;
+  });
   const marked = marks.map(({position}) => position);
   const midpointRefs = new WeakMap<Vec, {facetId: number; edgeMidpoint: number; point: Vec}>();
   const corners: Vec[] = [];
@@ -148,8 +157,9 @@ export function paperGeometry(paper: PaperState) {
       if (where) return where;
     }
   };
-  const visibleAt = (point: Vec, layer: number) =>
-    !faces.slice(0, layer).some(({poly}) => location(poly, point) === 'inside');
+  const visibleAt = (point: Vec, layer: number) => exposedOnly
+    ? topLayer(point) === layer
+    : !faces.slice(0, layer).some(({poly}) => location(poly, point) === 'inside');
   const edges = faces.flatMap(({poly}, layer) =>
     poly.map((a, i) => ({line: {a, b: poly[(i + 1) % poly.length]}, layer})));
   const creaseLines = faces.flatMap(({creases}, layer) => creases.map(({line, index}) => ({line, layer, index})));
@@ -178,8 +188,9 @@ export function paperGeometry(paper: PaperState) {
     if (midpoint && (facetId === undefined || midpoint.facetId === facetId)) return {point, material: midpoint};
     const vertex = vertexRefs.get(point);
     const mark = marks.find(({position}) => position === point);
+    const exposedFacet = exposedOnly ? faces[topLayer(point)]?.facet.id : undefined;
     const face = faces.find(({facet, poly}) =>
-      (facetId ?? vertex?.facetId ?? facet.id) === facet.id && location(poly, point) &&
+      (facetId ?? vertex?.facetId ?? exposedFacet ?? facet.id) === facet.id && location(poly, point) &&
       (!mark || location(orientCCW(facet.poly), mark.point)));
     if (!face) return {point};
     const corner = vertex?.facetId === face.facet.id ? vertex.corner : undefined;
@@ -211,6 +222,48 @@ export function paperGeometry(paper: PaperState) {
     lineReference: (reference: LineReference): SelectedLine => ({...reference, ...creaseRefs.get(reference)}),
     pointReference,
     contains: (point: Vec) => hit(point) !== undefined,
+    lineVisible: exposedOnly ? (reference: LineReference, point: Vec) =>
+      reference.facetId === faces[topLayer(point)]?.facet.id : undefined,
+    sameSurface(candidate: Vec, probe: Vec) {
+      const layer = topLayer(probe);
+      return layer < 0 || topLayer(candidate) === layer;
+    },
+    /** Sample a single exposed face. Work in its material coordinates for intersections. */
+    surfaceAt(probe: Vec, reach: number, contactRadius: number) {
+      const layer = topLayer(probe);
+      const face = faces[layer];
+      if (!face) return {proximity: 0};
+      const toMaterial = invert(face.facet.transform);
+      const local = apply(toMaterial, probe);
+      const visible = (point: Vec) => topLayer(point) === layer;
+      const intersections = materialIntersectionDetails(state, local, reach).flatMap(result => {
+        const position = apply(face.facet.transform, result.point);
+        if (!visible(position) || result.references.some(line => !clipCrease(line, face.facet.poly))) return [];
+        return [{...result, position}];
+      });
+      const nearbyMarks = marks.filter(({position}) => visible(position) && distance(probe, position) <= reach);
+      let feature: {contact: SurfaceContact; key: string} = {contact: 'surface', key: 'surface'};
+      let proximity = 0;
+      const offer = (kind: SurfaceContact, id: string, point: Vec) => {
+        const gap = distance(probe, point);
+        proximity = Math.max(proximity, 1 - gap / reach);
+        if (gap <= contactRadius) feature = {contact: kind, key: id};
+      };
+      const identity: Mat = {a: 1, b: 0, c: 0, d: 1, e: 0, f: 0};
+      const edge = nearestLine(edges.filter(ref => ref.layer === layer), probe, identity, reach, (_, point) => visible(point));
+      const crease = nearestLine(creaseLines.filter(ref => ref.layer === layer), probe, identity, reach, (_, point) => visible(point));
+      if (edge) offer('edge', lineKey(edge.reference.line), edge.point);
+      if (crease) offer('crease', String(crease.reference.index), crease.point);
+      const mark = nearbyMarks.reduce<typeof nearbyMarks[number] | undefined>((best, candidate) =>
+        !best || distance(probe, candidate.position) < distance(probe, best.position) ? candidate : best, undefined);
+      if (mark) offer('mark', String(mark.id), mark.position);
+      const intersection = intersections[0];
+      if (intersection && (!mark || distance(mark.point, intersection.point) > EPS)) {
+        offer('intersection', pointKey(intersection.point), intersection.position);
+      }
+      return {contact: feature.contact, key: `${layer}/${feature.contact}/${feature.key}`, proximity,
+        intersection: intersection && distance(probe, intersection.position) <= contactRadius ? intersection : undefined};
+    },
     markOptions(screen: Vec, transform: Mat, radius: number, locked?: MarkOption): MarkOption[] {
       const world = apply(invert(transform), screen);
       const reach = releaseRadius(radius) / Math.hypot(transform.a, transform.b);
@@ -239,6 +292,17 @@ export function paperGeometry(paper: PaperState) {
         .map(({value}) => value);
     },
     snapPoints() {
+      if (exposedOnly) {
+        const targets = edges.flatMap(({line: {a, b}, layer}) => {
+          const point = lerp(a, b, .5);
+          if (!visibleAt(point, layer)) return [];
+          rememberMidpoint(point);
+          return [point];
+        });
+        const creasePoints = creaseLines.flatMap(({line: {a, b}, layer}) =>
+          [a, b, lerp(a, b, .5)].filter(point => visibleAt(point, layer)));
+        return [...marked, ...corners, ...targets, ...creasePoints];
+      }
       const { minX, maxX, minY, maxY } = bounds(faces.flatMap(({poly}) => poly));
       const center = scale(add({ x: minX, y: minY }, { x: maxX, y: maxY }), 0.5);
       const targets = snapTargets(state).points.filter(({kind, point}) => kind !== 'vertex' && hit(point) === 'edge');
@@ -262,6 +326,7 @@ export function paperGeometry(paper: PaperState) {
         }
       }
       const includeIntersection = (first: typeof lines[number], second: typeof lines[number]) => {
+        if (exposedOnly && first.layer !== second.layer) return;
         const point = segmentIntersection(first.line, second.line);
         if (point && visibleAt(point, Math.max(first.layer, second.layer))) include(point);
       };
