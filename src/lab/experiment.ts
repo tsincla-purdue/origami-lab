@@ -1,8 +1,9 @@
-import { EPS, distance, type Vec } from '../../vendor/origamio/src/geometry';
+import { EPS, applyToLine, distance, type Vec } from '../../vendor/origamio/src/geometry';
 import {
-  ENGINE_REVISION, NUMERICS, apply, canReverseFold, deepFreeze, initialState, reverseFold, turnPaper,
+  ENGINE_REVISION, NUMERICS, apply, canReverseFold, deepFreeze, foldMotion, initialState, reverseFold, turnPaper,
   withMaterialMarks, type Move, type PaperState, type Validation,
 } from './engine';
+import { paperTransform } from './paper-pose';
 import { materialIntersections, materialLine, segmentIntersection, type IntersectionSources } from './material-points';
 import { DEFAULT_PAPER_STYLE, isPaperStyle, type PaperStyle } from './paper-style';
 import { inspectGeometry, type CapturedGeometry, type GeometryCheckOptions, type GeometryReport } from './proof-geometry';
@@ -145,14 +146,48 @@ export function canUnfold(experiment: Experiment): boolean {
   return experiment.attempts.length < MAX_ATTEMPTS && unfoldSource(experiment) !== undefined;
 }
 
-export function recordUnfold(experiment: Experiment): Experiment {
+/** A prior flap can be recognized only while the entire moved packet still has its folded material geometry. */
+export function openingMotions(experiment: Experiment) {
+  const current = new Map(experiment.final.facets.map(facet => [facet.id, facet]));
+  const pose = paperTransform(experiment.final.pose);
+  return [...activeFoldAttempts(experiment)].reverse().flatMap(foldAttempt => {
+    const folded = stateAt(experiment, foldAttempt);
+    const motion = foldMotion(folded);
+    if (!motion) return [];
+    const moved = folded.facets.filter(facet => motion.packet.facetIds.includes(facet.id));
+    if (!moved.every(facet => {
+      const now = current.get(facet.id);
+      return now?.poly === facet.poly && now.transform === facet.transform;
+    })) return [];
+    return [{foldAttempt, packet: motion.packet, line: applyToLine(pose, motion.line)}];
+  });
+}
+
+const unfoldedValidation = deepFreeze({
+  status: 'accepted', code: 'unfold', reason: 'Reversed the last fold and retained its material creases.',
+} satisfies Validation);
+
+/** The same reversal and retained material annotations power previews and recorded openings. */
+export function previewUnfold(experiment: Experiment, foldAttempt: number): {state: PaperState; validation: Validation} {
+  if (experiment.attempts.length >= MAX_ATTEMPTS) return {state: experiment.final, validation: {
+    status: 'unverified', code: 'history-limit', reason: 'The experiment has reached its history limit.',
+  }};
+  const plan = unfoldSource(experiment);
+  const state = plan?.foldAttempt === foldAttempt ? reverseFold(experiment.final, plan.source, plan.folded) : undefined;
+  return state ? {state, validation: unfoldedValidation} : {state: experiment.final, validation: {
+    status: 'unverified', code: 'unfold-order', reason: 'Only the latest active fold can be opened by a verified reversal.',
+  }};
+}
+
+export function recordUnfold(experiment: Experiment, expectedFold?: number): Experiment {
   requireHistorySpace(experiment);
   const plan = unfoldSource(experiment);
+  if (expectedFold !== undefined && plan?.foldAttempt !== expectedFold) throw new Error('The grabbed fold can no longer be opened.');
   const state = plan && reverseFold(experiment.final, plan.source, plan.folded);
   if (!state || !plan) throw new Error('The latest state is not the result of a reversible fold.');
   return appendAttempt(experiment, {
     operation: 'unfold', move: { foldAttempt: plan.foldAttempt, label: 'Unfold' }, state,
-    validation: { status: 'accepted', code: 'unfold', reason: 'Reversed the last fold and retained its material creases.' },
+    validation: unfoldedValidation,
   });
 }
 

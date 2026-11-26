@@ -8,11 +8,11 @@ import {
   serializeExperiment, setPaperStyle, stateAt, undoMove, validate,
 } from './lab';
 import type { Experiment, Move, PaperStyle, Validation } from './lab';
-import { MAX_EXPERIMENT_LENGTH, recordGestureMove } from './lab/experiment';
-import { inspectGeometry, realizeMarkedPerpendicular, type CapturedGeometry, type GeometryReport } from './lab/proof-geometry';
-import { draftCapture, type ConstraintIssue, type CornerSelection, type Draft, type Tool } from './playground/gestures';
+import { MAX_EXPERIMENT_LENGTH, openingMotions } from './lab/experiment';
+import { inspectGeometry, realizeMarkedPerpendicular, type GeometryReport } from './lab/proof-geometry';
+import type { ConstraintIssue, CornerSelection, Draft, Tool } from './playground/gestures';
 import { connectGestures } from './playground/pointer-gestures';
-import { interpretDraft, uniqueAccepted, type Interpretation } from './playground/intent';
+import { commitInterpretation, interpretGesture, uniqueAccepted, type Interpretation } from './playground/intent';
 import {
   constraintMarkup, cornerHandles, faceColor, lineHandles, markHandles, markMarkup, markSelection,
   packetMarkup, paperMarkup, previewMarkup, styleSwatch,
@@ -77,6 +77,7 @@ let shownSelection: CornerSelection | undefined;
 const atTip = () => cursor === experiment.attempts.length && playback === undefined;
 const editable = () => atTip() && !creaseView;
 const gestures = connectGestures(paper, {snapping: () => snapToggle.checked, show: showDraft, commit: settleDraft,
+  openingMotions: () => openingMotions(experiment),
   markedPerpendicular: (moving, through, crease, facetId) => realizeMarkedPerpendicular(experiment, moving, through, crease, facetId)});
 let shownMarkOptions: ReturnType<typeof gestures.markOptions> | undefined;
 const selectedMark = () => gestures.markOptions()[markLayer.selectedIndex];
@@ -130,7 +131,7 @@ function drawOverlay() {
   const unit = pixelUnit();
   const landings = interpretations.filter(({result}) => result.validation.status === 'accepted')
     .map(({draft}) => draft.destination);
-  layer.innerHTML = (selection ? packetMarkup(state, selection, guide, unit, option?.move.packet) : '') +
+  layer.innerHTML = (selection ? packetMarkup(state, selection, guide, unit, option?.draft.packet) : '') +
     previewMarkup(state, guide, endpoint, hoverCorner, unit, !selection) +
     constraintMarkup(gestures.pinned(), option?.draft ?? pending, constraintIssue, landings, unit) +
     markSelection(selectedMark() ?? gestures.markGhost(), unit, !selectedMark());
@@ -162,7 +163,7 @@ function displayPacketControls() {
   countControl.value = gestures.wholeStack() ? 'all' :
     selection && gestures.hasExplicitPacket() ? String(selection.count) : '';
   const max = selection?.packets.at(-1)?.facetIds.length;
-  const inferred = picked()?.draft.inferFrom && picked()?.move.packet?.facetIds.length;
+  const inferred = (picked()?.draft.inferFrom || picked()?.draft.opening) && picked()?.draft.packet?.facetIds.length;
   const text = inferred && inferred !== selection?.count ? `${inferred} connected facets` :
     gestures.wholeStack() ? 'Whole stack' : selection ? `${selection.count}/${max} layers` : '';
   const status = get('packet-status');
@@ -179,7 +180,7 @@ function gestureStatus() {
   const pin = gestures.pinned();
   const explanation = verdict?.status === 'accepted' && pending?.lineIntent?.kind === 'perpendicular-point'
     ? 'The crease passes through the pin at a right angle to the grabbed line.' : verdict?.reason;
-  const snap = picked()?.draft.snapLabel ?? pending?.snapLabel;
+  const snap = (picked()?.draft ?? pending)?.snapLabel;
   const intersection = selectedMark() ?? gestures.markGhost();
   const message = snap && (!verdict || verdict.status === 'accepted')
     ? `${snap}. ${pending?.side === undefined ? 'Tap the side to move.' : explanation ?? ''}`.trim()
@@ -220,11 +221,11 @@ function gestureStatus() {
     const labels = interpretations.map(({draft, move}) => {
       const {x, y} = draft.destination;
       const location = `(${x.toFixed(3)}, ${y.toFixed(3)})`;
-      const material = `${move.packet?.facetIds.length ?? experiment.final.facets.length} connected facets`;
+      const material = `${draft.opening ? 'Open flap · ' : ''}${draft.packet?.facetIds.length ?? experiment.final.facets.length} connected facets`;
       if (pending?.alternatives?.length) {
         const target = draft.lineIntent?.kind === 'align-lines' ? ` · target facet ${draft.lineIntent.target.facetId}` : '';
         const axis = [draft.line.a, draft.line.b].map(({x, y}) => `(${x.toFixed(3)}, ${y.toFixed(3)})`).join(' → ');
-        return `${move.label} · ${axis}${target}`;
+        return `${move?.label ?? 'Open flap'} · ${axis}${target}`;
       }
       return landings.size === 1 ? material : hasPacketChoice ? `${location} · ${material}` : location;
     });
@@ -237,7 +238,7 @@ function gestureStatus() {
 
 function showDraft(draft?: Draft, hover?: Vec, issue?: ConstraintIssue) {
   if (draft !== pending) {
-    interpretations = draft && editable() ? interpretDraft(experiment.final, draft) : [];
+    interpretations = draft && editable() ? interpretGesture(experiment, draft) : [];
     choice = 0;
   }
   pending = draft;
@@ -261,15 +262,17 @@ function clearGesture() {
 function finishDraft() {
   const option = picked();
   if (editable() && pending && gestures.canConfirm(pending) && option?.result.validation.status === 'accepted') {
-    commitMove(option.move, draftCapture(option.draft));
+    commitAction(() => commitInterpretation(experiment, option));
   }
 }
 
 function settleDraft(draft: Draft) {
   const verdict = picked()?.result.validation;
-  if (verdict?.status === 'accepted') {
-    if (uniqueAccepted(draft, interpretations) && !(draft.constraint && gestures.pinNeedsConfirmation())) finishDraft();
-  } else if (!draft.constraint && !draft.alternatives?.length) {
+  const automatic = uniqueAccepted(draft, interpretations);
+  if (automatic && !(draft.constraint && gestures.pinNeedsConfirmation())) {
+    choice = interpretations.indexOf(automatic);
+    finishDraft();
+  } else if (verdict?.status !== 'accepted' && !draft.constraint && !draft.alternatives?.length && interpretations.length <= 1) {
     gestureFeedback = verdict;
     gestures.cancel();
   }
@@ -436,10 +439,10 @@ function download(filename: string, content: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function commitMove(move: Move, capture?: CapturedGeometry) {
+function commitAction(record: () => Experiment) {
   if (!atTip()) return;
   try {
-    experiment = capture ? recordGestureMove(experiment, move, capture) : recordMove(experiment, move);
+    experiment = record();
     cursor = experiment.attempts.length;
     clearGesture();
     notify();
@@ -482,7 +485,7 @@ advanced.addEventListener('toggle', () => {
 });
 perform.addEventListener('click', () => {
   const move = candidateMove();
-  if (move) commitMove(move);
+  if (move) commitAction(() => recordMove(experiment, move));
 });
 cornerControl.addEventListener('change', () => {
   if (cornerControl.value === 'point') return;

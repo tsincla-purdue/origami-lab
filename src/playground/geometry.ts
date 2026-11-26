@@ -1,5 +1,5 @@
 import {
-  EPS, add, apply, applyToLine, bounds, compose, cross, distance, dot, invert, length, lerp, orientCCW, perpendicularBisector,
+  AREA_EPS, EPS, add, apply, applyToLine, area, bounds, compose, cross, distance, dot, intersectConvex, invert, length, lerp, orientCCW, perpendicularBisector,
   scale, sideOf, sub, type Line, type Mat, type Polygon, type Side, type Vec,
 } from '../../vendor/origamio/src/geometry';
 import { currentPolygon } from '../../vendor/origamio/src/paper';
@@ -222,6 +222,12 @@ export function paperGeometry(paper: PaperState, exposedOnly = false) {
     lineReference: (reference: LineReference): SelectedLine => ({...reference, ...creaseRefs.get(reference)}),
     pointReference,
     contains: (point: Vec) => hit(point) !== undefined,
+    exposedFacet: (point: Vec) => faces[topLayer(point)]?.facet.id,
+    packetExposed(ids: ReadonlySet<number>) {
+      return faces.every(({facet, poly}, layer) => !ids.has(facet.id) ||
+        !faces.slice(0, layer).some(upper => !ids.has(upper.facet.id) && upper.facet.z > facet.z &&
+          area(intersectConvex(poly, upper.poly)) > AREA_EPS));
+    },
     lineVisible: exposedOnly ? (reference: LineReference, point: Vec) =>
       reference.facetId === faces[topLayer(point)]?.facet.id : undefined,
     sameSurface(candidate: Vec, probe: Vec) {

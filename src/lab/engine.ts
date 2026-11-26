@@ -43,7 +43,7 @@ export const NUMERICS = Object.freeze({
 
 const { auditDistance, auditArea, maxFacets } = NUMERICS;
 const verifiedStates = new WeakSet<PaperState>();
-const foldSources = new WeakMap<PaperState, PaperState>();
+const foldSources = new WeakMap<PaperState, {source: PaperState; line: Line; packet: MaterialPacket}>();
 
 export function deepFreeze<T>(value: T): T {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -390,14 +390,19 @@ export function apply(state: PaperState, move: unknown, validatorVersion: 1 | 2 
   const folded = verified({
     ...trial.state, ...(state.marks && {marks: state.marks}), ...(state.pose && {pose: state.pose}),
   });
-  foldSources.set(folded, state);
+  foldSources.set(folded, {source: state, line: deepFreeze(trial.line), packet: deepFreeze({facetIds: trial.movedIds})});
   return { state: folded, validation };
+}
+
+/** Movement captured by the same accepted trial that produced this partition. */
+export function foldMotion(folded: PaperState): {readonly line: Line; readonly packet: MaterialPacket} | undefined {
+  return foldSources.get(folded);
 }
 
 /** A later fold must have been reversed before the earlier path is safe to traverse. */
 export function canReverseFold(state: PaperState, source: PaperState, folded: PaperState): boolean {
   // Only certified folds change the immutable mesh. Marks and retained creases do not affect the path.
-  return verifiedStates.has(state) && foldSources.get(folded) === source &&
+  return verifiedStates.has(state) && foldSources.get(folded)?.source === source &&
     state.facets === folded.facets && state.foldCount === folded.foldCount;
 }
 
