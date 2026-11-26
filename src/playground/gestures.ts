@@ -1,18 +1,16 @@
 import {
   EPS, add, apply, distance, dot, invert, sideOf, signedDistance, sub, type Line, type Mat, type Side, type Vec,
 } from '../../vendor/origamio/src/geometry';
-import {
-  cornerPackets, resolveLineFold, solvePointOntoLine,
-  type ConstraintResult, type ConstraintSolution, type LineFoldIntent, type LineReference, type MaterialPacket, type PaperState,
-} from '../lab';
-import { packetHingeLanding } from '../lab/packets';
-import { containsLinePoint } from '../lab/line-constraints';
+import { cornerPackets, packetHingeLanding, type MaterialPacket } from '../lab/packets';
+import { containsLinePoint, resolveLineFold, type LineFoldIntent, type LineReference } from '../lab/line-constraints';
+import { solvePointOntoLine, type ConstraintResult, type ConstraintSolution } from '../lab/constraints';
+import type { PaperState } from '../lab/engine';
 import { pointOnLineBranch, type CapturedGeometry, type PointOnLine } from '../lab/geometry-intent';
 import { creasePairs, drawnMarkCandidates, sameAxis } from './crease-snap';
 import { lineKey, pointKey, releaseRadius, selectSnap, snapRadius, type SnapCandidate } from './snap-selection';
 import {
   CORNER_HIT_RADIUS, LINE_GRAB_RADIUS, MARK_HIT_RADIUS, cornerFold, foldMove, nearestLine,
-  nearestPoint, nearestSupportingLine, paperGeometry, paperToScreen, type MarkOption,
+  nearestPoint, nearestSupportingLine, paperGeometry, type MarkOption,
 } from './geometry';
 
 export type Tool = 'corner' | 'crease';
@@ -64,7 +62,6 @@ export interface CornerSelection {
 }
 
 const TAP_INTERVAL = 3500; // Milliseconds between deliberate taps. Dragging has no deadline.
-const PIN_HOLD = 550;
 
 interface Drag {
   id: number;
@@ -80,19 +77,39 @@ interface Drag {
   source?: LineReference;
   pointSources: readonly LineReference[];
   snapKey?: string;
-  holdTimer?: number;
   longPress?: boolean;
 }
 
-const client = (event: PointerEvent): Vec => ({x: event.clientX, y: event.clientY});
+export interface GestureInput {
+  readonly point: Vec;
+  readonly pointerType: string;
+  readonly altKey?: boolean;
+}
 
-export function connectGestures(svg: SVGSVGElement, callbacks: {
+export interface GesturePress extends GestureInput {
+  readonly id: number;
+  readonly time: number;
+}
+
+export interface SnapObservation {
+  readonly key?: string;
+  readonly proximity: number;
+}
+
+export interface GestureCallbacks {
   snapping: () => boolean;
   show: (draft?: Draft, hover?: Vec, issue?: ConstraintIssue) => void;
   commit: (draft: Draft) => void;
   markedPerpendicular: (moving: number, through: number, crease: number, facetId: number) =>
     {line: Line; landing: Vec} | undefined;
+}
+
+export function createGestureInterpreter(callbacks: GestureCallbacks & {
+  transform: () => Mat | undefined;
+  ended?: (id: number) => void;
+  exposedOnly?: boolean;
 }) {
+  const {transform, exposedOnly} = callbacks;
   let state: PaperState | undefined;
   let tool: Tool = 'corner';
   let geometry: ReturnType<typeof paperGeometry> | undefined;
@@ -102,7 +119,7 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
   let pin: Vec | undefined;
   let confirmPin = false;
   let issue: ConstraintIssue | undefined;
-  let frame = 0;
+  let observation: SnapObservation = {proximity: 0};
   let selection: CornerSelection | undefined;
   let lastTap: number | undefined;
   let wholeStack = false;
@@ -144,26 +161,17 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
     callbacks.show(held, undefined, issue);
   }
 
-  function transform() {
-    const screen = svg.getScreenCTM();
-    if (state && screen && Math.abs(screen.a * screen.d - screen.b * screen.c) > EPS) {
-      return paperToScreen(screen, state.size);
-    }
-  }
-
-  function snap(point: Vec, map: NonNullable<ReturnType<typeof transform>>, event: PointerEvent, hingeLandings: readonly Vec[] = []) {
+  function snap(point: Vec, map: NonNullable<ReturnType<typeof transform>>, event: GestureInput, hingeLandings: readonly Vec[] = []) {
     if (!geometry || !callbacks.snapping() || event.altKey) return;
     targets ??= geometry.snapPoints();
     return nearestPoint(hingeLandings.length ? [...hingeLandings, ...targets] : targets, point, map, snapRadius(event.pointerType));
   }
 
   function release() {
-    cancelAnimationFrame(frame);
-    frame = 0;
     const id = drag?.id;
-    window.clearTimeout(drag?.holdTimer);
     drag = undefined;
-    if (id !== undefined && svg.hasPointerCapture(id)) svg.releasePointerCapture(id);
+    observation = {proximity: 0};
+    if (id !== undefined) callbacks.ended?.(id);
   }
 
   function cancel() {
@@ -212,6 +220,11 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
 
   function previewSnap(options: readonly SnapCandidate<Draft>[], radius: number, press: Drag): Draft | undefined {
     const [primary, ...nearby] = selectSnap(options, radius, press.snapKey);
+    if (exposedOnly) {
+      const range = releaseRadius(radius);
+      const score = options.reduce((best, option) => Math.min(best, option.score), range);
+      observation = {key: primary?.key, proximity: 1 - score / range};
+    }
     press.snapKey = primary?.key;
     if (!primary) return;
     const candidates = [primary, ...nearby];
@@ -283,10 +296,11 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
     });
   }
 
-  function projection(event: PointerEvent): Draft | undefined {
+  function projection(event: GestureInput): Draft | undefined {
+    observation = {proximity: 0};
     const map = transform();
-    if (!drag || drag.tapOnly || drag.longPress || !map || distance(drag.start, client(event)) < drag.minimum) return;
-    const target = add(client(event), drag.grabOffset);
+    if (!drag || drag.tapOnly || drag.longPress || !map || distance(drag.start, event.point) < drag.minimum) return;
+    const target = add(event.point, drag.grabOffset);
     const {anchor} = drag;
     issue = undefined;
     const magnet = snapRadius(event.pointerType);
@@ -307,7 +321,7 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
         }
         const lines = geometry.grabLines().flatMap(reference => {
           if (reference === source || sameAxis(source.line, reference.line)) return [];
-          const hit = nearestLine([reference], target, map, releaseRadius(magnet));
+          const hit = nearestLine([reference], target, map, releaseRadius(magnet), geometry!.lineVisible);
           if (!hit) return [];
           const intent: LineFoldIntent = {kind: 'align-lines', source, moving: anchor, target: reference};
           const value = constrainedDraft(resolveLineFold(intent), anchor, target, map, reference.line, intent);
@@ -402,19 +416,24 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
     return {line: raw, tool, anchor: raw.a, destination, snapped: [], capture: {kind: 'freehand'}};
   }
 
-  svg.addEventListener('pointerdown', event => {
-    if (!event.isPrimary || event.button !== 0 || drag || !geometry) return;
+  function press(event: GesturePress) {
+    if (drag || !geometry) return;
+    const paper = geometry;
     const map = transform();
     if (!map) return;
-    const start = client(event);
+    const start = event.point;
+    const point = apply(invert(map), start);
     const touch = event.pointerType === 'touch';
     const grab = nearestPoint([
-      ...geometry.marked, ...geometry.corners, ...(selection ? [selection.corner] : []),
-    ], start, map, CORNER_HIT_RADIUS);
+      ...paper.marked, ...paper.corners, ...(!exposedOnly && selection ? [selection.corner] : []),
+    ].filter(candidate => !exposedOnly || paper.sameSurface(candidate, point)),
+    start, map, CORNER_HIT_RADIUS);
     const anchor = tool === 'corner' ? grab ?? (pin && snap(start, map, event)) : undefined;
     const lineGrab = tool === 'corner' && !anchor
-      ? nearestLine(geometry.grabLines(), start, map, LINE_GRAB_RADIUS) : undefined;
-    const point = apply(invert(map), start);
+      ? nearestLine(paper.grabLines(), start, map, LINE_GRAB_RADIUS, (reference, candidate) =>
+        !exposedOnly || (paper.lineVisible?.(reference, candidate) && paper.sameSurface(candidate, point)) === true)
+      : undefined;
+    if (exposedOnly && !anchor && !lineGrab) return;
     const edgePoint = callbacks.snapping() && !event.altKey ? geometry.snapLine(start, map, touch ? 18 : 13)?.point : undefined;
     if (tool === 'corner' && !anchor && !lineGrab && !edgePoint && !geometry.contains(point) &&
         !geometry.markOptions(start, map, touch ? 18 : MARK_HIT_RADIUS).length) return;
@@ -427,14 +446,14 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
       ? geometry.pointSources(anchor, facetId) : [];
     const {packet: selected, inferFrom} = material();
     const current = state;
-    const hingeLandings = tool === 'corner' && current && anchor
+    const hingeLandings = tool === 'corner' && current && anchor && !exposedOnly
       ? (inferFrom ?? (selected ? [selected] : [])).flatMap(packet => {
         const landing = packetHingeLanding(current, packet, anchor);
         return landing ? [landing] : [];
       })
       : [];
     drag = {
-      id: event.pointerId, start, anchor: selectedPoint, tapAnchor: referencePoint,
+      id: event.id, start, anchor: selectedPoint, tapAnchor: referencePoint,
       rawAnchor: point,
       grabOffset: tool === 'corner' && (anchor || lineGrab) ? sub(apply(map, selectedPoint), start) : {x: 0, y: 0},
       minimum: touch ? 8 : 5,
@@ -444,65 +463,61 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
       source: lineGrab?.reference,
       pointSources,
     };
-    if (!tapOnly) {
-      svg.setPointerCapture(event.pointerId);
-      event.preventDefault();
-    }
     if (tool === 'corner') {
       held = undefined;
       issue = undefined;
       offeredMarks = [];
-      ghost = geometry.markOptions(start, map, snapRadius(event.pointerType), ghost)[0];
-      const press = drag;
-      press.holdTimer = window.setTimeout(() => {
-        if (drag !== press || press.moved) return;
-        press.longPress = true;
-        chooseCorner(referencePoint);
-        const map = transform();
-        const same = pin && map && distance(apply(map, pin), apply(map, referencePoint)) <= CORNER_HIT_RADIUS;
-        pin = same ? undefined : referencePoint;
-        confirmPin = false;
-        lastTap = undefined;
-        ghost = undefined;
-        callbacks.show();
-      }, PIN_HOLD);
+      ghost = exposedOnly ? undefined : geometry.markOptions(start, map, snapRadius(event.pointerType), ghost)[0];
     }
     if (lineGrab) issue = {source: lineGrab.reference.line, reason: pin
       ? 'Drag along this line to fold it back through the pin.' : 'Drag this line toward another visible edge or crease.'};
     callbacks.show(held, tool === 'corner' ? anchor : undefined, issue);
-  });
+    return drag;
+  }
 
-  svg.addEventListener('pointermove', event => {
-    if (drag && event.pointerId !== drag.id) return;
-    if (drag && distance(drag.start, client(event)) >= drag.minimum) {
+  function hold() {
+    if (!drag || drag.moved || tool !== 'corner') return;
+    drag.longPress = true;
+    const {tapAnchor} = drag;
+    chooseCorner(tapAnchor);
+    const map = transform();
+    const same = pin && map && distance(apply(map, pin), apply(map, tapAnchor)) <= CORNER_HIT_RADIUS;
+    pin = same ? undefined : tapAnchor;
+    confirmPin = false;
+    lastTap = undefined;
+    ghost = undefined;
+    callbacks.show();
+  }
+
+  function noticeMovement(event: GestureInput) {
+    if (drag && distance(drag.start, event.point) >= drag.minimum) {
       drag.moved = true;
       ghost = undefined;
-      window.clearTimeout(drag.holdTimer);
     }
-    cancelAnimationFrame(frame);
-    frame = requestAnimationFrame(() => {
-      frame = 0;
-      if (drag) {
-        if (drag.longPress) return;
-        callbacks.show(projection(event) ?? held, tool === 'corner' && !drag.tapOnly ? drag.anchor : undefined, issue);
-      } else if (tool === 'corner' && event.pointerType !== 'touch') {
-        const map = transform();
-        if (map && geometry) {
-          ghost = !held && !offeredMarks.length
-            ? geometry.markOptions(client(event), map, snapRadius(event.pointerType), ghost)[0] : undefined;
-          callbacks.show(held, nearestPoint(geometry.corners, client(event), map, CORNER_HIT_RADIUS), issue);
-        }
-      }
-    });
-  });
+    return drag?.moved;
+  }
 
-  svg.addEventListener('pointerup', event => {
-    if (!drag || event.pointerId !== drag.id) return;
+  function move(event: GestureInput) {
+    if (drag) {
+      if (drag.longPress) return;
+      callbacks.show(projection(event) ?? held, tool === 'corner' && !drag.tapOnly ? drag.anchor : undefined, issue);
+    } else if (!exposedOnly && tool === 'corner' && event.pointerType !== 'touch') {
+      const map = transform();
+      if (map && geometry) {
+        ghost = !held && !offeredMarks.length
+          ? geometry.markOptions(event.point, map, snapRadius(event.pointerType), ghost)[0] : undefined;
+        callbacks.show(held, nearestPoint(geometry.corners, event.point, map, CORNER_HIT_RADIUS), issue);
+      }
+    }
+  }
+
+  function finish(event: GesturePress) {
+    if (!drag || event.id !== drag.id) return;
     if (drag.longPress) {
       release();
       return;
     }
-    const wasTap = !drag.moved && distance(drag.start, client(event)) < drag.minimum;
+    const wasTap = !drag.moved && distance(drag.start, event.point) < drag.minimum;
     const draft = projection(event);
     const anchor = drag.tapAnchor;
     release();
@@ -512,12 +527,12 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
         callbacks.show(held);
         callbacks.commit(draft);
       } else {
-        if (wasTap) {
+        if (wasTap && !exposedOnly) {
           chooseCorner(anchor);
-          cycle(event.timeStamp);
+          cycle(event.time);
           const map = transform();
           if (map && geometry) {
-            offeredMarks = geometry.markOptions(client(event), map, snapRadius(event.pointerType), ghost);
+            offeredMarks = geometry.markOptions(event.point, map, snapRadius(event.pointerType), ghost);
           }
           ghost = undefined;
         }
@@ -530,7 +545,7 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
     } else if (wasTap && held) {
       const map = transform();
       if (map) {
-        const point = apply(invert(map), client(event));
+        const point = apply(invert(map), event.point);
         const offset = signedDistance(held.line, point);
         const pixelScale = Math.hypot(map.a, map.b);
         if (geometry?.contains(point) && Math.abs(offset) * pixelScale >= 5) {
@@ -543,36 +558,32 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
       }
     }
     callbacks.show(held);
-  });
+  }
 
-  svg.addEventListener('pointerleave', () => {
+  function leave() {
     if (drag && (!drag.tapOnly || drag.longPress)) return;
     if (drag) release();
     ghost = undefined;
-    cancelAnimationFrame(frame);
     callbacks.show(held, undefined, issue);
-  });
-  function cancelPointer(event: PointerEvent) {
-    if (drag?.id === event.pointerId) {
+  }
+
+  function cancelPointer(id: number) {
+    if (drag?.id === id) {
       if (drag.tapOnly || drag.longPress) release();
       else cancel();
     }
   }
-  svg.addEventListener('pointercancel', cancelPointer);
-  svg.addEventListener('lostpointercapture', cancelPointer);
-  svg.addEventListener('contextmenu', event => {
-    if (drag && tool === 'corner') event.preventDefault();
-  });
-  // Some browsers ignore touch-action on SVG shapes. Suppress scrolling only for a captured gesture.
-  svg.addEventListener('touchmove', event => {
-    if (drag && (!drag.tapOnly || drag.longPress) && event.cancelable) event.preventDefault();
-  }, { passive: false });
 
   return {
+    press, hold, noticeMovement, move, finish, leave, cancelPointer,
+    tracking: () => drag,
+    snapObservation: () => observation,
+    surfaceAt: (probe: Vec, reach: number, contactRadius: number) =>
+      geometry?.surfaceAt(probe, reach, contactRadius),
     setContext(next: PaperState | undefined, nextTool: Tool) {
       if (state === next && tool === nextTool) return;
       if (state !== next) {
-        geometry = next && paperGeometry(next);
+        geometry = next && paperGeometry(next, exposedOnly);
         targets = undefined;
         wholeStack = false;
         explicit = false;
@@ -581,7 +592,6 @@ export function connectGestures(svg: SVGSVGElement, callbacks: {
       }
       state = next;
       tool = nextTool;
-      svg.dataset.tool = next ? tool : 'none';
       cancel();
     },
     cancel,

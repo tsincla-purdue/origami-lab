@@ -10,8 +10,9 @@ import {
 import type { Experiment, Move, PaperStyle, Validation } from './lab';
 import { MAX_EXPERIMENT_LENGTH, recordGestureMove } from './lab/experiment';
 import { inspectGeometry, realizeMarkedPerpendicular, type CapturedGeometry, type GeometryReport } from './lab/proof-geometry';
-import { connectGestures, draftCapture, type ConstraintIssue, type CornerSelection, type Draft, type Tool } from './playground/gestures';
-import { interpretDraft, type Interpretation } from './playground/intent';
+import { draftCapture, type ConstraintIssue, type CornerSelection, type Draft, type Tool } from './playground/gestures';
+import { connectGestures } from './playground/pointer-gestures';
+import { interpretDraft, uniqueAccepted, type Interpretation } from './playground/intent';
 import {
   constraintMarkup, cornerHandles, faceColor, lineHandles, markHandles, markMarkup, markSelection,
   packetMarkup, paperMarkup, previewMarkup, styleSwatch,
@@ -267,12 +268,7 @@ function finishDraft() {
 function settleDraft(draft: Draft) {
   const verdict = picked()?.result.validation;
   if (verdict?.status === 'accepted') {
-    const edgeSnap = draft.source || draft.lineIntent?.kind === 'align-lines';
-    // An invalid rival need not hold up an accepted edge snap. A failed suggestion still stays visible.
-    const unambiguous = edgeSnap
-      ? interpretations.filter(option => option.result.validation.status === 'accepted').length === 1
-      : !draft.alternatives?.length && interpretations.length === 1;
-    if (unambiguous && !(draft.constraint && gestures.pinNeedsConfirmation())) finishDraft();
+    if (uniqueAccepted(draft, interpretations) && !(draft.constraint && gestures.pinNeedsConfirmation())) finishDraft();
   } else if (!draft.constraint && !draft.alternatives?.length) {
     gestureFeedback = verdict;
     gestures.cancel();

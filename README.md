@@ -183,6 +183,10 @@ ORIGAMI_BASE_PATH=/origami-lab/ npm run preview
 
 ## Programmable API
 
+The [headless tactile session](docs/TACTILE.md) lets a controller trace, mark,
+drag, release, and turn the paper over using local feedback and the playground's
+gesture solver.
+
 ```js
 import {
   apply, createExperiment, propose, recordMove, serializeExperiment, validate,
