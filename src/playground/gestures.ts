@@ -223,14 +223,19 @@ export function createGestureInterpreter(callbacks: GestureCallbacks & {
     return {...draft, capture};
   }
 
-  function previewSnap(options: readonly SnapCandidate<Draft>[], radius: number, press: Drag): Draft | undefined {
+  function previewSnap(options: readonly SnapCandidate<Draft>[], radius: number, press: Drag, target: Vec, map: Mat): Draft | undefined {
     const openings = options.filter(option => option.value.opening);
     // A fold onto the very same hinge is the geometric description of the opening.
     // Keep separate axes in the normal competition and use the same hysteresis.
     const candidatesForSnap = options.filter(({value}) => value.opening ||
       !openings.some(option => (option.score <= radius || option.key === press.snapKey) &&
         sameAxis(option.value.line, value.line)));
-    const [primary, ...nearby] = selectSnap(candidatesForSnap, radius, press.snapKey);
+    // An axis can score well through retained crease points even when its reflected
+    // landing misses the hand. Near an opening, compare actual landings in pixels.
+    const directOpening = openings.find(opening => opening.score <= radius / 4 &&
+      candidatesForSnap.every(option => option === opening ||
+        distance(apply(map, option.value.destination), target) > opening.score + 1));
+    const [primary, ...nearby] = directOpening ? [directOpening] : selectSnap(candidatesForSnap, radius, press.snapKey);
     if (exposedOnly) {
       const range = releaseRadius(radius);
       const score = options.reduce((best, option) => Math.min(best, option.score), range);
@@ -356,7 +361,7 @@ export function createGestureInterpreter(callbacks: GestureCallbacks & {
           return [{key: `line/${reference.facetId}/${lineKey(reference.line)}`, score, value}];
         });
         const points = pointDrafts(drag, target, map, geometry.marked, magnet);
-        const snapped = previewSnap([...openings, ...lines, ...points], magnet, drag);
+        const snapped = previewSnap([...openings, ...lines, ...points], magnet, drag, target, map);
         if (snapped) issue = undefined;
         else issue ??= {source: source.line, reason: 'Drag toward a visible line or marked point.'};
         return snapped;
@@ -412,7 +417,7 @@ export function createGestureInterpreter(callbacks: GestureCallbacks & {
         // compare both constraints and let an already acquired axis hold through jitter.
         const candidates = points.some(({score}) => score <= magnet / 2) && !drag.snapKey?.startsWith('axis/')
           ? points : [...points, ...creases];
-        const snapped = previewSnap([...openings, ...marked, ...candidates], magnet, drag);
+        const snapped = previewSnap([...openings, ...marked, ...candidates], magnet, drag, target, map);
         if (snapped) return snapped;
       }
       return fold && {...fold, tool, anchor, destination, snapped: [], capture: {kind: 'freehand'}, ...material()};
@@ -427,7 +432,8 @@ export function createGestureInterpreter(callbacks: GestureCallbacks & {
           capture: {kind: 'through-points', points: points.map(point => pointReference(point))} as const,
           snapLabel: points.length === 1 ? 'Drawn crease through mark' : 'Drawn crease through two marks'}}));
       const matchingPair = pairs.some(({score}) => score <= magnet) || drag.snapKey?.startsWith('axis/');
-      const draft = (matchingPair && previewSnap(previews(pairs), magnet, drag)) || previewSnap(previews(singles), magnet, drag);
+      const draft = (matchingPair && previewSnap(previews(pairs), magnet, drag, target, map)) ||
+        previewSnap(previews(singles), magnet, drag, target, map);
       if (draft) return draft;
       const first = snap(drag.start, map, event);
       const last = snap(target, map, event);

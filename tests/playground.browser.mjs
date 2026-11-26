@@ -9,12 +9,12 @@ async function screenPoint(page, x, y) {
   }, [x, y]);
 }
 
-async function startMouseDrag(page, from, to) {
+async function startMouseDrag(page, from, to, steps = 8) {
   const start = await screenPoint(page, ...from);
   const end = await screenPoint(page, ...to);
   await page.mouse.move(start.x, start.y);
   await page.mouse.down();
-  await page.mouse.move(end.x, end.y, { steps: 8 });
+  await page.mouse.move(end.x, end.y, { steps });
 }
 
 async function dragCorner(page, from, to) {
@@ -173,6 +173,33 @@ test('pulling an exposed flap back opens its hinge identically for the mouse and
   expect(pointer.final.creases).toEqual(folded.final.creases);
   expect(pointer.final.facets).toEqual(folded.initial.facets);
   await verifyReplayAndUndo(page, pointer);
+});
+
+test('dragging opens two overlapping folds in order despite the retained snap references', async ({page}) => {
+  await dragCorner(page, [1, 0], [0, 0]);
+  await expect(page.locator('#sheet-caption')).toHaveText('2 facets · 1 fold');
+  await dragCorner(page, [.5, 1], [.485, .985]);
+  await expect(page.locator('#sheet-caption')).toHaveText('4 facets · 2 folds');
+
+  await dragCorner(page, [.485, .985], [.5, 1]);
+  await expect(page.locator('#sheet-caption')).toHaveText('2 facets · 1 fold');
+  await expect(page.getByRole('button', {name: 'Unfold', exact: true})).toBeEnabled();
+  const partlyOpen = await downloadJSON(page, 'Export experiment');
+  expect(partlyOpen.attempts[2]).toMatchObject({operation: 'unfold', move: {foldAttempt: 2}});
+  expect(partlyOpen.final.facets).toEqual(partlyOpen.attempts[0].state.facets);
+
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await startMouseDrag(page, [0, 0], [1, 0], 35);
+  await expect(page.locator('#gesture-reason')).toContainText('Open flap');
+  await page.mouse.up();
+  await expect(page.locator('#history-count')).toHaveText('4 attempts');
+  const complete = await downloadJSON(page, 'Export experiment');
+  expect(complete.attempts[3]).toMatchObject({operation: 'unfold', move: {foldAttempt: 1}});
+  expect(complete.final.facets).toEqual(complete.initial.facets);
+  expect(complete.final.creases).toEqual(partlyOpen.attempts[1].state.creases);
+  // The second fold scored both plies of the first half-fold.
+  expect(complete.final.creases).toHaveLength(3);
+  await verifyReplayAndUndo(page, complete);
 });
 
 test('previews the exact crease-edge intersection on folded and turned material before marking', async ({page}) => {

@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import {
-  activeFoldAttempts, createExperiment, createTactileSession, importExperiment, recordMark, recordMove,
+  activeFoldAttempts, canUnfold, createExperiment, createTactileSession, importExperiment, recordMark, recordMove,
   recordUnfold, replayTactileTrajectory, serializeExperiment, undoMove, type TactileFeedback, type TactileHand,
 } from '../src/lab';
 
@@ -105,6 +105,7 @@ it('does not choose between opening a hinge and folding a different packet about
   const near = session.hand.move(at(.51, 1));
   expect(openingClick(near)).toBe(true);
   expect(near.validation?.code).toBe('competing-interpretations');
+  expect(session.hand.move(at(.5, 1)).validation?.code).toBe('competing-interpretations');
   expect(session.hand.release().validation).toMatchObject({status: 'unverified', code: 'competing-interpretations'});
   expect(session.experiment()).toBe(second);
 });
@@ -132,6 +133,69 @@ it('refuses an earlier intact hinge out of order and restores it after opening t
   expect(session.experiment().final.facets).toEqual(folded.initial.facets);
   expect(session.experiment().final.creases).toEqual(folded.final.creases);
   expect(session.experiment().final.marks).toEqual(folded.final.marks);
+});
+
+it('opens an exposed earlier flap when the gripper leaves a retained crease snap for its exact landing', () => {
+  const session = createTactileSession(createExperiment());
+  const {hand} = session;
+  for (const [from, to, code] of [
+    [at(1, 0), at(0, 0), 'simple-fold'],
+    [at(.5, 1), at(.485, .985), 'simple-fold'],
+    [at(.485, .985), at(.5, 1), 'unfold'],
+  ] as const) {
+    hand.beginDrag(from);
+    hand.move(to);
+    expect(hand.release().validation?.code).toBe(code);
+  }
+  const partlyOpen = session.experiment();
+  expect(activeFoldAttempts(partlyOpen)).toEqual([1]);
+  expect(partlyOpen.final.facets).toBe(partlyOpen.attempts[0].state.facets);
+  expect(canUnfold(partlyOpen)).toBe(true);
+
+  hand.beginDrag(at(0, 0));
+  const rival = hand.move(at(.986, 0));
+  expect(rival.events).toContainEqual(expect.objectContaining({kind: 'snap-acquired', constraint: 'axis'}));
+  expect(rival.validation?.code).toBe('competing-interpretations');
+  const opened = hand.move(at(1, 0));
+  expect(opened.events).toContainEqual(expect.objectContaining({kind: 'snap-lost'}));
+  expect(openingClick(opened)).toBe(true);
+  expect(hand.release().validation?.code).toBe('unfold');
+
+  const complete = session.experiment();
+  expect(complete.attempts[3]).toMatchObject({operation: 'unfold', move: {foldAttempt: 1}});
+  expect(complete.final.facets).toBe(complete.initial.facets);
+  expect(complete.final.creases).toBe(partlyOpen.final.creases);
+  expect(complete.final.creases).toHaveLength(3);
+  expect(importExperiment(serializeExperiment(complete))).toEqual(complete);
+});
+
+it('reports a still-covered earlier flap after the newer fold opens, then opens it after turnover', () => {
+  const covered = recordMove(createExperiment(), {line: [[.75, 0], [.75, 1]], side: 1, placement: 'bottom'});
+  const session = createTactileSession(covered);
+  const {hand} = session;
+  hand.beginDrag(at(1.5, 1));
+  hand.move(at(1.25, .75));
+  expect(hand.release().validation?.code).toBe('packet-fold');
+  hand.beginDrag(at(1.25, .75));
+  expect(openingClick(hand.move(at(1.5, 1)))).toBe(true);
+  expect(hand.release().validation?.code).toBe('unfold');
+  const partlyOpen = session.experiment();
+  expect(canUnfold(partlyOpen)).toBe(true);
+
+  hand.beginDrag(at(1.5, 0));
+  const blocked = hand.move(at(0, 0));
+  expect(blocked.events).toContainEqual(expect.objectContaining({
+    kind: 'resistance', validation: expect.objectContaining({status: 'rejected', code: 'opening-covered'}),
+  }));
+  expect(hand.release().validation?.code).toBe('opening-covered');
+  expect(session.experiment()).toBe(partlyOpen);
+
+  expect(hand.flip().validation?.code).toBe('flip');
+  hand.beginDrag(at(.75, 0));
+  expect(openingClick(hand.move(at(2.25, 0)))).toBe(true);
+  expect(hand.release().validation?.code).toBe('unfold');
+  expect(session.experiment().final.facets).toBe(covered.initial.facets);
+  expect(session.experiment().final.creases).toBe(partlyOpen.final.creases);
 });
 
 it('opens the moved material in displayed coordinates after turning its face upward', () => {
