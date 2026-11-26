@@ -99,6 +99,27 @@ it('retains ambiguity when distinct snapped axes are admissible after adding the
   expect(session.experiment()).toBe(first);
 });
 
+it('reports an uncertified partial swing when a third flap stays entirely on the fixed side', () => {
+  const session = createTactileSession(dogEar());
+  expect(drag(session.hand, at(1, 1), at(.94, .94)).release.validation?.code).toBe('packet-fold');
+  const before = session.experiment();
+  const line = perpendicularBisector(grab, landing);
+  const move: Move = {line: [[line.a.x, line.a.y], [line.b.x, line.b.y]], side: sideOf(line, grab)};
+  expect(validate(before.final, {...move, packet: {facetIds: [0]}})).toMatchObject({
+    status: 'rejected', code: 'blocked-hinge',
+  });
+  expect(validate(before.final, {...move, packet: {facetIds: [0, 1]}})).toMatchObject({
+    status: 'unverified', code: 'disconnected-packet',
+  });
+  expect(validate(before.final, {...move, packet: {facetIds: [0, 1, 2]}})).toMatchObject({
+    status: 'accepted', code: 'simple-fold',
+  });
+  expect(drag(session.hand, grab, landing).release.validation).toMatchObject({
+    status: 'unverified', code: 'disconnected-packet',
+  });
+  expect(session.experiment()).toBe(before);
+});
+
 it('uses the exposed ranks when the same construction is made on the reverse face', () => {
   const session = createTactileSession(createExperiment());
   expect(session.hand.flip().validation?.status).toBe('accepted');

@@ -86,7 +86,10 @@ export function interpretDraft(state: PaperState, draft: Draft): FoldInterpretat
       const result = apply(state, move);
       const interpretation = { draft: proposal, move, result };
       if (result.validation.status === 'accepted') accepted.push(interpretation);
-      else failed ??= interpretation;
+      // Ruling out one packet does not rule out another whose motion is unverified.
+      else if (!failed || (result.validation.status === 'unverified' && failed.result.validation.status === 'rejected')) {
+        failed = interpretation;
+      }
     }
   }
   return accepted.length ? accepted : failed ? [failed] : [];
