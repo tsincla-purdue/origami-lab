@@ -73,6 +73,9 @@ Only the latest active fold has a verified reversal. Other intact hinges can
 click and report an unverified reversal. An accepted competing fold on a
 different axis or packet leaves the gesture undecided. Move the hand to
 resolve the competing proposals.
+Within a quarter of the snap radius of an opening landing, a drag resolves
+competing axes when the opening is more than one virtual pixel closer than
+every rival landing. The same hinge can still offer different moving packets.
 
 An opening records a regular `unfold` attempt and preserves the paper's
 creases and marks. Undo edits history. Undoing the opening restores the
