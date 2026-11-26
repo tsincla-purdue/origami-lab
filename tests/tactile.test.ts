@@ -168,7 +168,7 @@ it('replays a bounded tactile log independently of the ordinary marked and folde
   expect(replay.feedback).toEqual(log.entries.map(({feedback}) => feedback));
   expect(serializeExperiment(replay.experiment)).toBe(serialized);
   expect(serialized).not.toContain('snap-acquired');
-  expect(Object.keys(hand).sort()).toEqual(['beginDrag', 'beginTrace', 'flip', 'mark', 'move', 'release']);
+  expect(Object.keys(hand).sort()).toEqual(['beginDrag', 'beginTrace', 'flip', 'mark', 'move', 'release', 'unfold']);
 
   const short = createTactileSession(initial, {trajectoryLimit: 1});
   short.hand.beginTrace(point(.4, .4));
