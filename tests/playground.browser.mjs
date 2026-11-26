@@ -1032,6 +1032,27 @@ test('construction A uses Whole stack before grabbing a dog-eared sheet', async 
   await verifyReplayAndUndo(page, experiment);
 });
 
+test('a deep corner drag carries the dog-ear that covers the moving paper', async ({page}) => {
+  await dragCorner(page, [1, 0], [.5, 1]);
+  const dogEar = await downloadJSON(page, 'Export experiment');
+  expect(dogEar.attempts[0].validation.status).toBe('accepted');
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+
+  await startMouseDrag(page, [0, 1], [.84, .12]);
+  await expect(page.locator('#gesture-status')).toHaveText('accepted');
+  await expect(page.locator('.packet-moving')).toHaveCount(2);
+  await page.mouse.up();
+
+  const deepFold = await downloadJSON(page, 'Export experiment');
+  expect(deepFold.attempts).toHaveLength(2);
+  expect(deepFold.attempts[1]).toMatchObject({
+    move: {packet: {facetIds: [0, 1]}}, validation: {code: 'simple-fold'},
+  });
+  expect(deepFold.final.creases).toHaveLength(3);
+  expect(deepFold.final.creases[0]).toEqual(dogEar.final.creases[0]);
+  await verifyReplayAndUndo(page, deepFold);
+});
+
 test('pointer-only dog-ear carries the attached flap into a half-fold', async ({page}) => {
   await page.getByRole('button', {name: 'Diagonal stripes'}).click();
   await dragCorner(page, [1, 1], [.5, .5]);
