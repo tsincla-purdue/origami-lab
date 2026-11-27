@@ -10,3 +10,6 @@ test-results/
 !*.env.example
 !*.env.*.example
 !.envrc.example
+
+.clydie-build/
+runs/clydie/
