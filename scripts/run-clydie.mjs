@@ -6,7 +6,7 @@ import {defaults, observe, lmstudioController, importExperiment, ollamaControlle
   serializeExperiment, summarize} from '../.clydie-build/episode.js';
 
 const options = Object.fromEntries([
-  'controller', 'model', 'endpoint', 'seed', 'temperature', 'top-p', 'tokens', 'context',
+  'controller', 'interaction', 'lmstudio-info', 'model', 'endpoint', 'seed', 'temperature', 'top-p', 'tokens', 'context',
   'max-commands', 'max-decisions', 'duration-ms', 'timeout-ms', 'step', 'pixels-per-unit',
   'trajectory-limit', 'sensory-limit', 'recent-limit', 'notebook-limit', 'initial', 'output', 'export',
 ].map(key => [key, {type: 'string'}]));
@@ -21,15 +21,17 @@ async function loadRecord(path) {
 function inspect(record) {
   const motors = [...record.trajectory.entries, ...record.overflow];
   console.log('Controller', record.controller.type, record.controller.model ?? record.controller.policy, 'seed', record.controller.seed ?? record.controller.options?.seed);
+  if (record.controller.type === 'lmstudio') console.log('Interaction', record.controller.interaction ?? 'structured', record.controller.serverInfo ?? '');
   console.log('Tactile trajectory', record.trajectory.truncated ? 'incomplete' : 'complete');
   for (const [i, d] of record.decisions.entries()) {
     console.log(`\nDecision ${i + 1} before motor ${d.motorStart}`);
-    if (record.version === 2) {
+    if (record.version >= 2) {
       console.log('Observed (host), before choice', JSON.stringify(d.view.sensoryMemory));
       console.log('Recent executed steps and deltas', JSON.stringify(d.view.recent));
-      console.log('Inquiry (model), visible before choice', JSON.stringify(d.view.inquiryNotebook));
+      if (record.version === 2) console.log('Inquiry (model), visible before choice', JSON.stringify(d.view.inquiryNotebook));
     }
-    console.log('Controller reply', d.raw ?? '(no reply)');
+    console.log(record.controller.interaction === 'native-tools' ? 'Tool request (model, raw message)' : 'Controller reply', d.raw ?? '(no reply)');
+    if (d.tool) console.log('Tool feedback (host)', d.tool.result.tool_call_id, d.tool.result.content);
     if (d.choice?.note) console.log('Inquiry (model), before motor', d.motorStart, d.choice.note);
     if (d.error) console.log('  Error', d.error);
     for (let index = d.motorStart; index < d.motorStart + d.motorCount; index++) {
@@ -42,8 +44,8 @@ function inspect(record) {
       if (feedback.validation) console.log('  Host diagnostic', feedback.validation.code, feedback.validation.reason);
     }
   }
-  if (record.version === 2) console.log('\nFinal observed (host)', record.sensoryMemory);
-  console.log(record.version === 1 ? 'Legacy notebook (model-authored)' : 'Final inquiry (model)',
+  if (record.version >= 2) console.log('\nFinal observed (host)', record.sensoryMemory);
+  if (record.version <= 2) console.log(record.version === 1 ? 'Legacy notebook (model-authored)' : 'Final inquiry (model)',
     record.version === 1 ? record.notebook : record.inquiryNotebook);
   console.log(JSON.stringify(summarize(record), null, 2));
 }
@@ -51,7 +53,7 @@ function inspect(record) {
 async function main() {
   if (values.help) {
     console.log('npm run clydie -- --controller ollama --model TAG [--seed N] [--output DIR]');
-    console.log('npm run clydie -- --controller lmstudio --model ID [--endpoint URL]');
+    console.log('npm run clydie -- --controller lmstudio --model ID [--interaction structured|motor-json|native-tools] [--endpoint URL]');
     console.log('npm run clydie -- --controller random [--seed N] [--max-commands N]');
     console.log('npm run clydie -- inspect FILE | replay FILE [--export NEW_FILE]');
     console.log('All controls and defaults are documented in docs/CLYDIE.md.');
@@ -73,13 +75,17 @@ async function main() {
   const type = values.controller ?? 'ollama';
   const options = {endpoint: values.endpoint, seed, temperature: number('temperature', .7),
     topP: number('top-p', .9), tokens: number('tokens', 128)};
+  if (type !== 'lmstudio' && (values.interaction !== undefined || values['lmstudio-info'] !== undefined)) {
+    throw new Error('--interaction and --lmstudio-info apply to LM Studio.');
+  }
   let controller;
   switch (type) {
     case 'random': controller = randomController(seed); break;
     case 'ollama': controller = ollamaController(values.model ?? '', {...options, context: number('context', 4096)}); break;
     case 'lmstudio':
-      if (values.context !== undefined) throw new Error('Set the context window when loading the model in LM Studio.');
-      controller = lmstudioController(values.model ?? '', options);
+      controller = lmstudioController(values.model ?? '', {...options, interaction: values.interaction,
+        context: number('context', 4096), serverInfo: values['lmstudio-info']
+          ? JSON.parse(await readFile(values['lmstudio-info'], 'utf8')) : undefined});
       break;
     default: throw new Error('Choose ollama, lmstudio or random.');
   }
@@ -100,6 +106,10 @@ async function main() {
   await writeFile(join(directory, 'experiment.json'), serializeExperiment(episode.experiment));
   console.log(directory);
   console.log(JSON.stringify({...summary, motorReplay: replayEpisode(episode).status}, null, 2));
+  if (episode.version === 3 && episode.ending === 'decision-limit' && !episode.decisions.some(d => d.choice)) {
+    console.error('Decision budget exhausted without a valid motor choice.');
+    process.exitCode = 1;
+  }
   if (episode.ending === 'provider-error' || episode.ending === 'model-timeout') {
     console.error(episode.decisions.at(-1).error);
     process.exitCode = 1;

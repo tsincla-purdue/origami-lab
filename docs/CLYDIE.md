@@ -26,9 +26,25 @@ curl http://127.0.0.1:1234/v1/models
 npm run clydie -- --controller lmstudio --model '<loaded-model-id>' --seed 17 --max-commands 60
 ```
 
-Use `--endpoint http://127.0.0.1:PORT` for a different server address. A base URL ending in `/v1` also works. Clydie posts to `/v1/chat/completions` with the shared action schema in `response_format.json_schema`. Every reply still passes through the host action parser. Set the context window when loading the model in LM Studio. The CLI sends `--tokens` as `max_tokens`.
+Use `--endpoint http://127.0.0.1:PORT` for a different server address. A base URL ending in `/v1` also works. The default structured interaction posts to `/v1/chat/completions` with the shared action schema in `response_format.json_schema`. Every reply still passes through the host action parser. Set the context window when loading the model in LM Studio. The CLI sends `--tokens` as `max_tokens`.
 
 The command prints the run directory, a behavioral summary and a motor replay result. Each run gets a new directory under `runs/clydie/`, ignored by Git. It contains `episode.json` and a separate `experiment.json` in the ordinary Origami Lab format. Use `--output DIR` to choose a different parent. To give Clydie a previously saved sheet, pass `--initial PATH/experiment.json`. The host verifies that file by import. Memory always starts empty.
+
+### Compare LM Studio interaction modes
+
+| Mode | What chooses an action | What the model receives next |
+| --- | --- | --- |
+| `structured` (default) | Constrained JSON with an optional inquiry note | The v0.3 view with host readings and separate model notebook |
+| `motor-json` | Constrained JSON with motor fields only | A bounded hand and sensory view, with no notebook |
+| `native-tools` | One of eight OpenAI-compatible motor functions with `tool_choice: "auto"` | A host-generated `role: "tool"` result paired with the assistant call by ID |
+
+All three use the same invitation, hand, interpolation and recorder. In tool mode, positioned functions take flat numeric `x` and `y` arguments. The other functions take `{}`. The host disables parallel calls and validates exactly one call. Invalid or missing calls consume a decision and receive a format correction. The raw assistant message, including any accompanying prose, stays available for inspection. Only the validated function call is echoed.
+
+A tool result identifies the executed motor range and final hand state. The first reading gives the projected sensation. Subsequent entries change fields in order, with `null` marking a cleared landmark. Each count repeats the entire reading, including its events. This preserves the intermediate projected feedback of a move even when both endpoints feel alike. A stopped or interrupted action can have zero commands. The terminal tool result is recorded even when there is no next inference.
+
+The host retains up to `--recent-limit` complete exchanges. Each request starts with the hand state before the oldest retained exchange. To fit the configured context, it evicts older pairs, then older sensory history from that snapshot. A correction follows the latest complete pair. The host measures UTF-8 bytes of messages and schemas and reserves the requested output tokens plus 128 tokens for template overhead. This is a conservative input estimate. LM Studio chooses the actual template and reports tokenizer usage when available. If the latest complete result cannot fit, the run ends with a diagnostic and preserves it on disk.
+
+Version 3 stores the exact messages for returned completions in `decisions[].responseMetadata.messages`, the raw reply, latency, and the call and host result in `decisions[].tool`. Offline replay reconstructs the messages, motor path and paired result from the starting sheet. Historical v1 and v2 files retain their original replay. See the matched-run commands and interpretation guide. [Local verification guide](verification/clydie-interactions.md)
 
 ## Inspect, replay and continue
 
@@ -51,10 +67,12 @@ npm run dev
 | CLI option | Default | Meaning |
 | --- | --- | --- |
 | `--controller`, `--model` | `ollama`, model required | Select `ollama`, `lmstudio` or `random`. Supply the installed model identifier for either model provider. |
-| `--endpoint` | Loopback port 11434 (Ollama) or 1234 (LM Studio) | Model server base URL. Both providers send the same prompt and tactile view. |
+| `--endpoint` | Loopback port 11434 (Ollama) or 1234 (LM Studio) | Model server base URL. The default structured interaction shares its prompt and tactile view with Ollama. |
+| `--interaction` | `structured` | LM Studio supports `structured`, `motor-json` and `native-tools`. |
+| `--lmstudio-info FILE` | Unreported version/configuration, unverified tool support | Include operator-observed LM Studio metadata in the episode. |
 | `--seed` | 1 | Integer 0–2147483647. Sets the baseline generator or the requested model sampling seed. |
 | `--temperature`, `--top-p` | 0.7, 0.9 | Model sampling parameters. |
-| `--tokens`, `--context` | 128, 4096 | Maximum generated tokens per reply (1–512) and Ollama context window (512–16384). The episode output budget is at most decisions × tokens with a conforming provider. |
+| `--tokens`, `--context` | 128, 4096 | Maximum generated tokens per reply (1–512) and context window (512–16384). LM Studio uses the specified context for host budgeting in the experimental modes. Set the same value on model load. The episode output budget is at most decisions × tokens with a conforming provider. |
 | `--max-commands`, `--max-decisions` | 100, 100 | Independent limits, each 1–2048. Invalid replies consume a decision. Interpolated movements each consume one motor command. |
 | `--duration-ms`, `--timeout-ms` | 600000, 30000 | Wall-clock limits for the episode and each model request, including model loading. |
 | `--step`, `--pixels-per-unit` | 0.125, 400 | Maximum length per interpolated move (0.01–1 sheet units) and virtual scale (32–4096 pixels per unit). |
@@ -66,7 +84,7 @@ A model can choose `stop`. The host can stop on a command or decision limit, ela
 
 ## What the controller can experience
 
-The provider sends two messages per request. The fixed system message invites Clydie to play with the paper, let what it experiences suggest a question (however small), pursue that question through its hands, and follow surprises or change direction freely. The exploration itself is the point; there is no prescribed shape, problem or outcome. It also supplies the action vocabulary, coordinate conventions and meanings of sensations. The user message contains only the hand’s motor position and current mode (`handMode` is `idle`, `tracing` or `dragging`), recent executed actions with projected feedback and literal deltas, host sensory memory, model inquiry notes, a motor index and any format correction. The system message and JSON schema are saved verbatim in model records. The controller receives detached data. The isolated model service has no handle to the session or host tools. A custom JavaScript controller, like other code running in the Node process, is trusted code. [Protocol and prompt](../src/clydie/protocol.ts)
+The baseline provider sends two messages per request. The fixed system message invites Clydie to play with the paper, let what it experiences suggest a question (however small), pursue that question through its hands, and follow surprises or change direction freely. The exploration itself is the point; there is no prescribed shape, problem or outcome. It also supplies the action vocabulary, coordinate conventions and meanings of sensations. The user message contains only the hand’s motor position and current mode (`handMode` is `idle`, `tracing` or `dragging`), recent executed actions with projected feedback and literal deltas, host sensory memory, model inquiry notes, a motor index and any format correction. The system message and JSON schema are saved verbatim in model records. The controller receives detached data. The isolated model service has no handle to the session or host tools. A custom JavaScript controller, like other code running in the Node process, is trusted code. [Protocol and prompt](../src/clydie/protocol.ts)
 
 - `beginDrag` and `beginTrace` place the hand directly. `move` follows a straight line in equal steps from the current motor position. Each requires `at` with finite numeric `x` and `y` in [−1, 2]. The original sheet spans [0, 1] on each axis, with y increasing upwards.
 - `release`, `mark`, `flip` and `unfold` issue the corresponding hand command. They take no coordinates. `stop` ends deliberation without touching the paper. The host validates the whole reply before execution.
@@ -104,9 +122,9 @@ The random baseline samples positions uniformly from the original unit square. A
 
 | Field | Contents |
 | --- | --- |
-| `version`, `controller`, `settings`, `started`, `elapsedMs` | Version 2 of the Clydie-facing episode protocol, controller and seed, model tag, prompt, schema and generation options where applicable, all limits and timing. |
+| `version`, `controller`, `settings`, `started`, `elapsedMs` | Version 2 for the structured baseline or version 3 for the motor-only experiments, controller and seed, model tag, prompt, schema and generation options where applicable, all limits and timing. |
 | `initial`, `experiment` | Full starting and final canonical experiments, including the Origamio revision and numerical policy. |
-| `decisions[]` | Exact presented view, raw model content when available, generated token count when reported, validated choice or diagnostic, and a zero-based `motorStart` and `motorCount`. |
+| `decisions[]` | Pre-decision host view, raw model reply when available, generated token count when reported, validated choice or diagnostic, and a zero-based `motorStart` and `motorCount`. |
 | `trajectory`, `overflow` | The native tactile log plus any subsequent host diagnostic entries. Each pairs a motor command with its complete feedback. Decision ranges index the concatenation. |
 | `sensoryMemory`, `inquiryNotebook`, `memoryPolicy` | Final host readings, separate time-stamped model notes, and versioned retention rules. |
 | `ending`, `summary` | Reason for stopping and post-episode measures. |

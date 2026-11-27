@@ -79,5 +79,5 @@ export function createMemory(limits: Limits) {
     }
     return v;
   }
-  return {record, inquire, view, get motor() {return motor;}, sensoryMemory, inquiryNotebook};
+  return {record, inquire, view, get motor() {return motor;}, get handMode() {return handMode;}, sensoryMemory, inquiryNotebook};
 }

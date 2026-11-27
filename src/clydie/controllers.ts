@@ -1,4 +1,5 @@
-import {format, instructions, type Action, type Controller, type View} from './protocol';
+import {motorFormat, motorMessages, tools} from './interaction';
+import {format, instructions, motorInstructions, object, type Interaction, type Action, type Controller, type View} from './protocol';
 
 export function integer(name: string, n: number, min: number, max: number) {
   if (!Number.isSafeInteger(n) || n < min || n > max) throw new RangeError(`${name} must be an integer in [${min}, ${max}].`);
@@ -73,8 +74,7 @@ function sampling(seed: number, temperature: number, topP: number) {
   return {temperature, top_p: topP, seed: integer('seed', seed, 0, 0x7fffffff)};
 }
 
-async function chat(provider: string, url: URL, model: string, view: View, signal: AbortSignal, parameters: object) {
-  const messages = [{role: 'system', content: instructions}, {role: 'user', content: JSON.stringify(view)}];
+async function chat(provider: string, url: URL, model: string, messages: object[], signal: AbortSignal, parameters: object) {
   const response = await fetch(url, {method: 'POST', signal, redirect: 'error',
     headers: {'Content-Type': 'application/json'}, body: JSON.stringify({model, stream: false, messages, ...parameters})});
   const body = await readBody(response, provider);
@@ -83,6 +83,10 @@ async function chat(provider: string, url: URL, model: string, view: View, signa
   }
   try { return {reply: JSON.parse(body), body}; }
   catch { throw new ProviderError(`${provider} returned invalid JSON.`, body); }
+}
+
+function baselineMessages(view: View) {
+  return [{role: 'system', content: instructions}, {role: 'user', content: JSON.stringify(view)}];
 }
 
 export function ollamaController(model: string, {
@@ -95,29 +99,50 @@ export function ollamaController(model: string, {
   return {
     metadata: {type: 'ollama', model, url: url.href, options, instructions, format},
     async decide(view, signal) {
-      const {body, reply} = await chat('Ollama', url, model, view, signal, {options, format});
+      const {body, reply} = await chat('Ollama', url, model, baselineMessages(view), signal, {options, format});
       if (typeof reply?.message?.content !== 'string') throw new ProviderError('Ollama returned no message content.', body);
       return {raw: reply.message.content, generatedTokens: reply.eval_count};
     },
   };
 }
 
+type StudioInfo = {version?: string; modelConfiguration?: object; toolSupport?: 'native' | 'default' | 'unverified'};
 export function lmstudioController(model: string, {
   endpoint = 'http://127.0.0.1:1234', seed = 1, temperature = .7, topP = .9, tokens = 128,
+  interaction = 'structured' as Interaction, context = 4096, serverInfo = {} as StudioInfo,
 } = {}): Controller {
   const url = modelURL(model, endpoint);
   const base = url.pathname.replace(/\/$/, '');
   url.pathname = (base.endsWith('/v1') ? base : base + '/v1') + '/chat/completions';
   const options = {...sampling(seed, temperature, topP), max_tokens: integer('tokens', tokens, 1, 512)};
-  const response_format = {type: 'json_schema', json_schema: {name: 'clydie_action', strict: true, schema: format}};
+  if (!['structured', 'motor-json', 'native-tools'].includes(interaction)) throw new Error('Unknown LM Studio interaction mode.');
+  if (!object(serverInfo) || (serverInfo.version !== undefined && typeof serverInfo.version !== 'string') ||
+      (serverInfo.modelConfiguration !== undefined && !object(serverInfo.modelConfiguration)) ||
+      (serverInfo.toolSupport !== undefined && !['native', 'default', 'unverified'].includes(serverInfo.toolSupport))) {
+    throw new Error('Expected LM Studio version, modelConfiguration object and native, default or unverified toolSupport.');
+  }
+  const native = interaction === 'native-tools';
+  const baseline = interaction === 'structured';
+  const prompt = baseline ? instructions : motorInstructions(native);
+  const inputBudget = integer('context', context, 512, 16384) - tokens - 128;
+  const parameters = native ? {tools, tool_choice: 'auto', parallel_tool_calls: false} :
+    {response_format: {type: 'json_schema', json_schema: {name: 'clydie_action', strict: true, schema: baseline ? format : motorFormat}}};
   return {
-    metadata: {type: 'lmstudio', model, url: url.href, options, instructions, response_format},
-    async decide(view, signal) {
-      const {reply, body} = await chat('LM Studio', url, model, view, signal, {...options, response_format});
+    metadata: {type: 'lmstudio', model, url: url.href, options, instructions: prompt, interaction, ...parameters,
+      context, inputBudget, serverInfo: {version: serverInfo.version ?? null, modelConfiguration: serverInfo.modelConfiguration ?? null,
+        toolSupport: serverInfo.toolSupport ?? 'unverified'}},
+    async decide(view, signal, history = []) {
+      const input = baseline ? {messages: baselineMessages(view), inputBytes: undefined} :
+        motorMessages(prompt, view, history, native, inputBudget);
+      const {reply, body} = await chat('LM Studio', url, model, input.messages, signal, {...options, ...parameters});
       const choice = reply?.choices?.[0];
-      if (typeof choice?.message?.content !== 'string') throw new ProviderError('LM Studio returned no message content.', body);
-      return {raw: choice.message.content, generatedTokens: reply.usage?.completion_tokens,
-        responseMetadata: {id: reply.id, model: reply.model, finishReason: choice.finish_reason, usage: reply.usage}};
+      if (!choice?.message || (!native && typeof choice.message.content !== 'string')) {
+        throw new ProviderError('LM Studio returned no message content.', body);
+      }
+      return {raw: native ? JSON.stringify(choice.message) : choice.message.content, generatedTokens: reply.usage?.completion_tokens,
+        responseMetadata: {id: reply.id, model: reply.model, finishReason: choice.finish_reason, usage: reply.usage,
+          systemFingerprint: reply.system_fingerprint, inputBytes: input.inputBytes,
+          ...(!baseline && {messages: input.messages})}};
     },
   };
 }
