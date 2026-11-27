@@ -11,11 +11,22 @@ npm ci
 npm run clydie -- --controller random --seed 17 --max-commands 60
 ```
 
-For live inference, start Ollama locally and choose an installed instruction model that supports structured JSON output. For example, `ollama pull smollm2:360m` installs a small model. Start `ollama serve` if the service is stopped. Model installation requires access to the weights. Once installed, inference runs locally without an API key.
+For live inference with Ollama, start Ollama locally and choose an installed instruction model that supports structured JSON output. For example, `ollama pull smollm2:360m` installs a small model. Start `ollama serve` if the service is stopped. Model installation requires access to the weights. Once installed, inference runs locally without an API key.
 
 ```sh
 npm run clydie -- --controller ollama --model smollm2:360m --seed 17 --max-commands 60
 ```
+
+### LM Studio
+
+Load an instruction model that supports structured output in LM Studio. Start the local server from the Developer tab. Its default address is `http://127.0.0.1:1234`. Copy the loaded model identifier from the server or from the `id` field in its model list.
+
+```sh
+curl http://127.0.0.1:1234/v1/models
+npm run clydie -- --controller lmstudio --model '<loaded-model-id>' --seed 17 --max-commands 60
+```
+
+Use `--endpoint http://127.0.0.1:PORT` for a different server address. A base URL ending in `/v1` also works. Clydie posts to `/v1/chat/completions` with the shared action schema in `response_format.json_schema`. Every reply still passes through the host action parser. Set the context window when loading the model in LM Studio. The CLI sends `--tokens` as `max_tokens`.
 
 The command prints the run directory, a behavioral summary and a motor replay result. Each run gets a new directory under `runs/clydie/`, ignored by Git. It contains `episode.json` and a separate `experiment.json` in the ordinary Origami Lab format. Use `--output DIR` to choose a different parent. To give Clydie a previously saved sheet, pass `--initial PATH/experiment.json`. The host verifies that file by import. Memory always starts empty.
 
@@ -39,11 +50,11 @@ npm run dev
 
 | CLI option | Default | Meaning |
 | --- | --- | --- |
-| `--controller`, `--model` | `ollama`, model required | Select `ollama` or `random` and the local model tag when applicable. |
-| `--endpoint` | `http://127.0.0.1:11434` | Ollama base URL. The provider appends `/api/chat` and sends the prompt and tactile view to this address. |
-| `--seed` | 1 | Integer 0–2147483647. Sets the baseline generator or the Ollama sampling seed. |
-| `--temperature`, `--top-p` | 0.7, 0.9 | Ollama sampling parameters. |
-| `--tokens`, `--context` | 128, 4096 | Maximum generated tokens per reply (1–512) and context window (512–16384). The episode output budget is at most decisions × tokens with a conforming provider. |
+| `--controller`, `--model` | `ollama`, model required | Select `ollama`, `lmstudio` or `random`. Supply the installed model identifier for either model provider. |
+| `--endpoint` | Loopback port 11434 (Ollama) or 1234 (LM Studio) | Model server base URL. Both providers send the same prompt and tactile view. |
+| `--seed` | 1 | Integer 0–2147483647. Sets the baseline generator or the requested model sampling seed. |
+| `--temperature`, `--top-p` | 0.7, 0.9 | Model sampling parameters. |
+| `--tokens`, `--context` | 128, 4096 | Maximum generated tokens per reply (1–512) and Ollama context window (512–16384). The episode output budget is at most decisions × tokens with a conforming provider. |
 | `--max-commands`, `--max-decisions` | 100, 100 | Independent limits, each 1–2048. Invalid replies consume a decision. Interpolated movements each consume one motor command. |
 | `--duration-ms`, `--timeout-ms` | 600000, 30000 | Wall-clock limits for the episode and each model request, including model loading. |
 | `--step`, `--pixels-per-unit` | 0.125, 400 | Maximum length per interpolated move (0.01–1 sheet units) and virtual scale (32–4096 pixels per unit). |
@@ -54,7 +65,7 @@ A model can choose `stop`. The host can stop on a command or decision limit, ela
 
 ## What the controller can experience
 
-The provider sends two messages per request. The fixed system message gives a blank-sheet invitation, the action vocabulary, coordinate conventions and the meanings of sensations. The user message contains only the hand's motor position, recent motor actions and observations, notebook and any format correction. The system message and JSON schema are saved verbatim in model records. The controller receives detached data. The isolated model service has no handle to the session or host tools. A custom JavaScript controller, like other code running in the Node process, is trusted code. [Protocol and prompt](../src/clydie/protocol.ts)
+The provider sends two messages per request. The fixed system message gives a blank-sheet invitation, the action vocabulary, coordinate conventions and the meanings of sensations. The user message contains only the hand’s motor position and current mode (`handMode` is `idle`, `tracing` or `dragging`), recent motor actions and observations, notebook and any format correction. The system message and JSON schema are saved verbatim in model records. The controller receives detached data. The isolated model service has no handle to the session or host tools. A custom JavaScript controller, like other code running in the Node process, is trusted code. [Protocol and prompt](../src/clydie/protocol.ts)
 
 - `beginDrag` and `beginTrace` place the hand directly. `move` follows a straight line in equal steps from the current motor position. Each requires `at` with finite numeric `x` and `y` in [−1, 2]. The original sheet spans [0, 1] on each axis, with y increasing upwards.
 - `release`, `mark`, `flip` and `unfold` issue the corresponding hand command. They take no coordinates. `stop` ends deliberation without touching the paper. The host validates the whole reply before execution.
@@ -76,6 +87,8 @@ The random baseline samples positions uniformly from the original unit square. A
 
 A budget can end a planned move partway through. The requested endpoint stays in the decision. Only issued motor commands enter the log. A full or disabled recorder with missing motor entries produces an explicitly incomplete trajectory. The diagnostic overflow preserves what the host experienced. The replay command reports `incomplete` and exits unsuccessfully in that case.
 
+LM Studio records the requested model, generation parameters and exact response format under `controller`. Each decision with returned message content also keeps the reported completion ID, served model, finish reason and token usage in `responseMetadata` when supplied. These fields stay in the host record. Older episodes retain their original views and replay as before.
+
 The summary counts contact acquisitions, snap acquisitions, resistance events and validation statuses per motor command. A draft movement can encounter resistance without committing an operation. The separate canonical history shows which operations entered the sheet's history. The runner computes these measures after the episode and never sends them to the controller.
 
 ## Verification
@@ -87,4 +100,11 @@ For an **optional real local-model integration test**, start Ollama with an inst
 ```sh
 npm run preclydie
 CLYDIE_MODEL=smollm2:360m node scripts/test-clydie-local.mjs
+```
+
+To run the same manual integration check against a loaded LM Studio model, use its identifier below. The test calls the local server, requires a valid action or stop decision, and verifies motor replay.
+
+```sh
+npm run preclydie
+CLYDIE_PROVIDER=lmstudio CLYDIE_MODEL='<loaded-model-id>' node scripts/test-clydie-local.mjs
 ```

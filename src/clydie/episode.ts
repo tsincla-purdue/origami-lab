@@ -5,7 +5,7 @@ import {
 import {integer, ProviderError} from './controllers';
 import {observe, parseChoice, type Action, type Choice, type Controller, type Point, type View} from './protocol';
 
-export {ollamaController, randomController} from './controllers';
+export {lmstudioController, ollamaController, randomController} from './controllers';
 export {importExperiment, serializeExperiment};
 export const defaults = {
   maxCommands: 100, maxDecisions: 100, durationMs: 600000, timeoutMs: 30000, step: .125,
@@ -59,6 +59,7 @@ function asAction(c: TactileCommand): Action {
 type Entry = TactileTrajectory['entries'][number];
 type Decision = {
   view: View; raw?: string; generatedTokens?: number; choice?: Choice; error?: string;
+  responseMetadata?: Record<string, unknown>;
   providerResponse?: {body: string; truncated: boolean};
   motorStart: number; motorCount: number;
 };
@@ -79,7 +80,7 @@ export async function runEpisode(controller: Controller, options: Partial<Settin
   const start = performance.now(), deadline = start + config.durationMs;
   const duration = AbortSignal.timeout(config.durationMs);
   const decisions: Decision[] = [], log: Entry[] = [];
-  const memory: View = {motor: {x: 0, y: 0}, recent: [], notebook: []};
+  const memory: View = {handMode: 'idle', motor: {x: 0, y: 0}, recent: [], notebook: []};
   function hostLimit(): Ending | undefined {
     if (signal?.aborted) return 'host-stop';
     if (performance.now() >= deadline || duration.aborted) return 'duration';
@@ -104,6 +105,7 @@ export async function runEpisode(controller: Controller, options: Partial<Settin
       const reply = await Promise.race([controller.decide(structuredClone(decision.view), request), cancelled]);
       decision.raw = reply.raw;
       decision.generatedTokens = reply.generatedTokens;
+      if (reply.responseMetadata) decision.responseMetadata = reply.responseMetadata;
     } catch (err) {
       decision.error = err instanceof Error ? err.message : 'Controller failed.';
       if (err instanceof ProviderError) decision.providerResponse = {body: err.body, truncated: err.truncated};
@@ -136,6 +138,11 @@ export async function runEpisode(controller: Controller, options: Partial<Settin
       const feedback = execute(session.hand, command);
       log.push({command, feedback});
       decision.motorCount++;
+      switch (command.kind) {
+        case 'trace': memory.handMode = 'tracing'; break;
+        case 'drag': memory.handMode = feedback.validation?.status === 'rejected' ? 'idle' : 'dragging'; break;
+        case 'release': case 'flip': case 'unfold': memory.handMode = 'idle'; break;
+      }
       memory.motor = feedback.motor;
       memory.recent.push({action: asAction(command), sense: observe(feedback)});
       if (memory.recent.length > config.recentLimit) memory.recent.shift();

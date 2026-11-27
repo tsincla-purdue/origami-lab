@@ -69,6 +69,7 @@ export function observe(f: TactileFeedback) {
 }
 
 export type View = {
+  handMode: 'idle' | 'tracing' | 'dragging';
   motor: Point;
   recent: {action: Action; sense: ReturnType<typeof observe>}[];
   notebook: Note[];
@@ -76,5 +77,5 @@ export type View = {
 };
 export interface Controller {
   metadata: Record<string, unknown>;
-  decide(view: View, signal: AbortSignal): Promise<{raw: string; generatedTokens?: number}>;
+  decide(view: View, signal: AbortSignal): Promise<{raw: string; generatedTokens?: number; responseMetadata?: Record<string, unknown>}>;
 }
