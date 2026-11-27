@@ -2,9 +2,10 @@ import { expect, it } from 'vitest';
 import { apply, distance, perpendicularBisector, sideOf, signedDistance, type Vec } from '../vendor/origamio/src/geometry';
 import { hinges, tears } from '../vendor/origamio/src/rigid';
 import {
-  canUnfold, cornerPackets, createExperiment, createTactileSession, importExperiment, recordMark, serializeExperiment, validate,
+  canUnfold, cornerPackets, createExperiment, createTactileSession, importExperiment, recordMark, recordMove, serializeExperiment, validate,
   type Experiment, type Move, type TactileHand,
 } from '../src/lab';
+import { foldPacket } from '../src/lab/packets';
 import { packetCandidates } from '../src/lab/packet-intent';
 import { interpretGesture } from '../src/playground/intent';
 
@@ -86,7 +87,15 @@ it.each([
   {first: .2, target: at(.84, .12), code: 'simple-fold', packet: [0, 1]},
   {first: .65, target: at(.84, .12), code: 'simple-fold', packet: [0, 1]},
 ])('infers the appropriate packet for first landing $first and second landing $target', ({first, target, code, packet}) => {
-  const session = createTactileSession(dogEar(first));
+  const experiment = dogEar(first);
+  const local = cornerPackets(experiment.final, grab);
+  const axis = perpendicularBisector(grab, target);
+  const side = sideOf(axis, grab);
+  const candidates = packetCandidates(experiment.final, local, axis, side);
+  expect(candidates).toContainEqual({facetIds: packet});
+  expect(packetCandidates(experiment.final, local, {a: axis.b, b: axis.a}, side === 1 ? -1 : 1))
+    .toEqual(candidates);
+  const session = createTactileSession(experiment);
   expect(drag(session.hand, grab, target).release.validation?.code).toBe(code);
   expect(session.experiment().attempts[1]).toMatchObject({move: {packet: {facetIds: packet}}});
 });
@@ -104,16 +113,26 @@ it('reports an uncertified partial swing when a third flap stays entirely on the
   expect(drag(session.hand, at(1, 1), at(.94, .94)).release.validation?.code).toBe('packet-fold');
   const before = session.experiment();
   const line = perpendicularBisector(grab, landing);
-  const move: Move = {line: [[line.a.x, line.a.y], [line.b.x, line.b.y]], side: sideOf(line, grab)};
+  const side = sideOf(line, grab);
+  const move: Move = {line: [[line.a.x, line.a.y], [line.b.x, line.b.y]], side};
+  const local = cornerPackets(before.final, grab);
+  expect(packetCandidates(before.final, local, line, side)).toEqual([{facetIds: [0]}, {facetIds: [0, 1]}]);
   expect(validate(before.final, {...move, packet: {facetIds: [0]}})).toMatchObject({
     status: 'rejected', code: 'blocked-hinge',
   });
   expect(validate(before.final, {...move, packet: {facetIds: [0, 1]}})).toMatchObject({
     status: 'unverified', code: 'disconnected-packet',
   });
-  expect(validate(before.final, {...move, packet: {facetIds: [0, 1, 2]}})).toMatchObject({
-    status: 'accepted', code: 'simple-fold',
+  expect(validate(before.final, {...move, packet: {facetIds: [0, 2]}})).toMatchObject({
+    status: 'rejected', code: 'packet-side',
   });
+  const whole = recordMove(before, move);
+  expect(whole.attempts.at(-1)?.validation).toMatchObject({status: 'accepted', code: 'simple-fold'});
+  expect(validate(before.final, {...move, packet: {facetIds: [0, 1, 2]}})).toEqual(whole.attempts.at(-1)?.validation);
+  // Compare trial geometry before the one-grip connectivity check. Parent 2 contributes no mover.
+  const partialTrial = foldPacket(before.final, line, side, new Set([0, 1]), {});
+  expect(partialTrial.movedIds).toEqual([3, 4]);
+  expect(partialTrial.state).toEqual(whole.final);
   expect(drag(session.hand, grab, landing).release.validation).toMatchObject({
     status: 'unverified', code: 'disconnected-packet',
   });

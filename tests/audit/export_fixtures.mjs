@@ -60,6 +60,20 @@ const fixtures = {
   slivers: [1e-6, 3e-6, 2e-5].map(s => recordMove(flat, move(line(s, 0, 0, s), 1))),
 };
 
+// One physical upper-strip swing expressed in three frames, then reversed through its history.
+const markedHalf = recordMark(half, point(.5, 0), [{edge: 0}, {crease: 0}]);
+const turnedHalf = recordFlip(markedHalf);
+fixtures.packetSymmetries = [-1, 0, 1].map(offset => {
+  const x = 3 / 16 + offset / 1024;
+  const packet = {facetIds: [1]};
+  // The half-sheet spans [0, .5], so turnover maps the displayed x coordinate to .5 - x.
+  return [
+    fold(markedHalf, move(line(x, 0, x, 1), 1, {packet})),
+    fold(markedHalf, move(line(x, 1, x, 0), -1, {packet})),
+    fold(turnedHalf, move(line(.5 - x, 0, .5 - x, 1), -1, {packet, placement: 'bottom'})),
+  ].map(experiment => recordUnfold(experiment));
+});
+
 let seed = 0x0a16;
 function random() {
   seed = (Math.imul(1664525, seed) + 1013904223) >>> 0;
