@@ -117,7 +117,8 @@ export interface MarkOption {
   readonly markId?: number;
 }
 
-export type SurfaceContact = 'surface' | 'edge' | 'crease' | 'intersection' | 'mark';
+export type Landmark = {readonly kind: 'corner' | 'intersection' | 'mark'; readonly intensity: number};
+export type SurfaceContact = 'surface' | 'edge' | 'crease' | Landmark['kind'];
 
 /** Stack order decides which projected corner can be picked at a shared screen position. */
 export function paperGeometry(paper: PaperState, exposedOnly = false) {
@@ -235,7 +236,7 @@ export function paperGeometry(paper: PaperState, exposedOnly = false) {
       return layer < 0 || topLayer(candidate) === layer;
     },
     /** Sample a single exposed face. Work in its material coordinates for intersections. */
-    surfaceAt(probe: Vec, reach: number, contactRadius: number) {
+    surfaceAt(probe: Vec, reach: number, contactRadius: number, sensoryVersion: 1 | 2 = 2) {
       const layer = topLayer(probe);
       const face = faces[layer];
       if (!face) return {proximity: 0};
@@ -260,6 +261,18 @@ export function paperGeometry(paper: PaperState, exposedOnly = false) {
       const crease = nearestLine(creaseLines.filter(ref => ref.layer === layer), probe, identity, reach, (_, point) => visible(point));
       if (edge) offer('edge', lineKey(edge.reference.line), edge.point);
       if (crease) offer('crease', String(crease.reference.index), crease.point);
+      let landmark: Landmark | undefined;
+      function sensePoint(kind: Landmark['kind'], position: Vec) {
+        const intensity = 1 - distance(probe, position) / reach;
+        if (intensity > 0 && intensity >= (landmark?.intensity ?? 0)) landmark = {kind, intensity};
+      }
+      if (sensoryVersion === 2) {
+        const corner = nearestPoint(corners.filter(visible), probe, identity, reach);
+        if (corner) {
+          offer('corner', pointKey(corner), corner);
+          sensePoint('corner', corner);
+        }
+      }
       const mark = nearbyMarks.reduce<typeof nearbyMarks[number] | undefined>((best, candidate) =>
         !best || distance(probe, candidate.position) < distance(probe, best.position) ? candidate : best, undefined);
       if (mark) offer('mark', String(mark.id), mark.position);
@@ -267,7 +280,11 @@ export function paperGeometry(paper: PaperState, exposedOnly = false) {
       if (intersection && (!mark || distance(mark.point, intersection.point) > EPS)) {
         offer('intersection', pointKey(intersection.point), intersection.position);
       }
-      return {contact: feature.contact, key: `${layer}/${feature.contact}/${feature.key}`, proximity,
+      if (sensoryVersion === 2) {
+        if (intersection) sensePoint('intersection', intersection.position);
+        if (mark) sensePoint('mark', mark.position);
+      }
+      return {landmark, contact: feature.contact, key: `${layer}/${feature.contact}/${feature.key}`, proximity,
         intersection: intersection && distance(probe, intersection.position) <= contactRadius ? intersection : undefined};
     },
     markOptions(screen: Vec, transform: Mat, radius: number, locked?: MarkOption): MarkOption[] {

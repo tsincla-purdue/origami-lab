@@ -1,4 +1,4 @@
-# Clydie v0
+# Clydie v0.2
 
 Clydie explores one sheet through the same tactile hand as the playground. A local instruction model chooses one action at a time. A small host moves the hand, keeps the experiment and records what happened. A seeded random controller can take the model's place in the same loop. Neither controller has a construction objective. [First three episodes and their records](verification/clydie-v0/README.md)
 
@@ -72,6 +72,21 @@ The provider sends two messages per request. The fixed system message gives a bl
 - Each executed command contributes a position, proximity, contact class, snap state and validation status when present. The view retains up to the last eight events per command and reports how many were omitted. Contact class, snap constraint class and resistance status are the only event details passed through. Event coordinates, hidden target coordinates, identities, shapes and diagnostic reasons stay with the host. Vision is absent.
 - Movement interpolation uses only the starting motor position and requested destination. It follows the path until completion or a host limit. The underlying tactile hand handles surface sampling, snapping, gesture interpretation and validation.
 - An optional note has a `kind` of `observation` or `conjecture` and up to 240 characters of `text`. The controller chooses both. Old notes drop out of working memory in insertion order. They remain in the episode record. The host never grades notes or supplies discoveries.
+
+A sensing finger can trace without gripping. A drag start yields `grip-acquired`
+and dragging mode, or `grip-failed` and idle mode. After a failed grip, moving
+only changes the hand position. An acquired grip can still encounter resistance
+on a move or release. The model sees the grip event and any verdict status.
+The host retains the original diagnostic, including `no-grab` and its native
+resistance event. The diagnostic summary counts those native events.
+
+During tracing, an optional `landmark: {kind, intensity}` signals a nearby exposed
+corner, intersection or mark. It is local to the current motor sample. The
+ordinary contact and proximity fields remain available. Sensing a feature
+does not affect the path or establish a grip. [Tactile ranges and contact precedence](TACTILE.md)
+
+The v0.2 comparison uses the original Qwen choices as a control and supports a
+fresh, matched LM Studio episode. [Baseline measurements, limits and commands](verification/clydie-v02.md)
 
 The random baseline samples positions uniformly from the original unit square. At rest it starts a trace or a drag with equal probability within an 88% chance of starting a bout. The remaining choices split evenly between flip and unfold. During a bout it normally moves (62%) or releases. At a felt intersection a 25% chance of marking comes out of the move probability. A rejected grab returns the policy to rest. The baseline generates no notes and uses the host budget to end. Its decisions, including these feedback rules, are part of the experimental condition. [Controllers](../src/clydie/controllers.ts)
 

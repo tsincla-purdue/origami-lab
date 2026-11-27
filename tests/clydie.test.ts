@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {createExperiment, recordFlip, type TactileFeedback} from '../src/lab';
+import {createExperiment, recordFlip, recordMove, type TactileFeedback} from '../src/lab';
 import {importExperiment, serializeExperiment, lmstudioController, ollamaController, randomController, replayEpisode, runEpisode, summarize} from '../src/clydie/episode';
 import {actions, format, instructions, observe, parseChoice, type Controller} from '../src/clydie/protocol';
 
@@ -249,4 +249,34 @@ it('reports hand mode from issued commands and grab feedback', async () => {
     'idle', 'tracing', 'tracing', 'tracing', 'idle', 'dragging', 'dragging',
     'idle', 'tracing', 'idle', 'dragging', 'idle',
   ]);
+});
+
+it('distinguishes an empty hand from a resisted manipulation in the model view', async () => {
+  const at = {x: .5, y: .5};
+  const r = await runEpisode(script({action: 'beginDrag', at}, {action: 'move', at: {x: .6, y: .5}},
+    {action: 'beginDrag', at: {x: 1, y: 0}}, {action: 'release'}, {action: 'stop'}));
+  const senses = r.decisions.slice(1).map(d => d.view.recent.at(-1)!.sense);
+  expect(senses[0].events).toEqual([{kind: 'grip-failed'}]);
+  expect(senses[1].motor).toEqual({x: .6, y: .5});
+  expect(senses[2].events).toContainEqual({kind: 'grip-acquired'});
+  expect(senses[3].events).toContainEqual({kind: 'resistance', outcome: 'unverified'});
+  expect(r.decisions.map(d => d.view.handMode)).toEqual(['idle', 'idle', 'idle', 'dragging', 'idle']);
+  expect(r.trajectory.entries[0].feedback.validation?.code).toBe('no-grab');
+  expect(r.experiment).toEqual(r.initial);
+});
+
+it('keeps resistance during a held movement distinct from failing to grip', async () => {
+  const sheet = recordMove(createExperiment(), {line: [[0, .02], [1, .82]], side: -1});
+  const r = await runEpisode(script({action: 'beginDrag', at: {x: 1, y: .82}},
+    {action: 'move', at: {x: 1, y: 1.16}}, {action: 'stop'}), {step: 1}, sheet);
+  const afterMove = r.decisions[2].view;
+  expect(afterMove.handMode).toBe('dragging');
+  expect(afterMove.recent.at(-1)?.sense.events).toContainEqual({kind: 'resistance', outcome: 'rejected'});
+  expect(r.trajectory.entries.at(-1)?.feedback.validation?.code).toBe('torn-hinge');
+});
+
+it('projects only the local landmark class and intensity', () => {
+  const f = {motor: {x: .02, y: 0}, contact: 'edge', proximity: 1, snapped: false, events: [],
+    landmark: {kind: 'corner', intensity: .33, position: {x: 0, y: 0}, facetId: 3, suggestedAction: 'move'}} as const;
+  expect(observe(f).landmark).toEqual({kind: 'corner', intensity: .33});
 });

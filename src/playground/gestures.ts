@@ -628,8 +628,8 @@ export function createGestureInterpreter(callbacks: GestureCallbacks & {
     press, hold, noticeMovement, move, finish, leave, cancelPointer,
     tracking: () => drag,
     snapObservation: () => observation,
-    surfaceAt: (probe: Vec, reach: number, contactRadius: number) =>
-      geometry?.surfaceAt(probe, reach, contactRadius),
+    surfaceAt: (probe: Vec, reach: number, contactRadius: number, sensoryVersion: 1 | 2 = 2) =>
+      geometry?.surfaceAt(probe, reach, contactRadius, sensoryVersion),
     setContext(next: PaperState | undefined, nextTool: Tool) {
       if (state === next && tool === nextTool) return;
       if (state !== next) {
