@@ -5,6 +5,12 @@ import {actions, format, instructions, observe, parseChoice, type Controller} fr
 
 afterEach(() => vi.unstubAllGlobals());
 
+it('invites Clydie to play and pursue its own question without a target', () => {
+  expect(instructions).toContain('Fully engage with the paper in a way you find pleasing.');
+  expect(instructions).toContain('Find a guiding question of your own and explore it.');
+  expect(instructions).toContain('There is no particular shape you need to make or outcome you need to reach.');
+});
+
 function mockOllama(...outputs: string[]) {
   const fetch = vi.fn(async (_url: URL, init: RequestInit) => {
     const raw = outputs.shift();
