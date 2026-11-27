@@ -136,6 +136,30 @@ test('a human can fold the saved local-model episode and reimport the result', a
   expect(await downloadJSON(page, 'Export experiment')).toEqual(continued);
 });
 
+test('repeated trace starts preserve contact and retain each motor command', async ({page}) => {
+  const result = await page.evaluate(async () => {
+    const {createExperiment, createTactileSession, replayTactileTrajectory} =
+      await import(new URL('./api/index.js', location.href).href);
+    const initial = createExperiment();
+    const session = createTactileSession(initial, {trajectoryLimit: 40});
+    const center = {x: .5, y: .5};
+    for (let i = 0; i < 40; i++) {
+      if (i === 20) session.hand.beginDrag(center);
+      else session.hand.beginTrace(center);
+    }
+    const log = session.trajectory();
+    const replay = replayTactileTrajectory(initial, log);
+    return {commands: log.entries.map(e => e.command.kind),
+      transitions: log.entries.flatMap((e, i) => e.feedback.events.map(event => [i, event.kind])),
+      failedGrab: log.entries[20].feedback.validation.code,
+      sameSheet: JSON.stringify(replay.experiment) === JSON.stringify(initial),
+      sameFeedback: JSON.stringify(replay.feedback) === JSON.stringify(log.entries.map(e => e.feedback))};
+  });
+  expect(result.commands).toEqual([...Array(20).fill('trace'), 'drag', ...Array(19).fill('trace')]);
+  expect(result.transitions).toEqual([[0, 'contact'], [20, 'contact-lost'], [20, 'resistance'], [21, 'contact']]);
+  expect(result).toMatchObject({failedGrab: 'no-grab', sameSheet: true, sameFeedback: true});
+});
+
 test('the mouse and tactile hand commit the same snapped crease and material packet', async ({page}) => {
   const from = [1, 0], to = [.017, .006];
   const headless = await page.evaluate(async ({from, to}) => {

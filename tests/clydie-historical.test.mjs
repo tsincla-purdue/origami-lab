@@ -13,3 +13,15 @@ for (const path of ['../docs/verification/clydie-v0/a.json.gz', './fixtures/clyd
     expect(() => replayEpisode(relabeled)).toThrow(/disagrees/);
   });
 }
+
+it('replays a frozen version 2 episode with its original stationary corner recontacts', () => {
+  const path = new URL('./fixtures/clydie-v02-stationary.json.gz', import.meta.url);
+  const record = JSON.parse(gunzipSync(readFileSync(path)));
+  expect(record.trajectory.version).toBe(2);
+  expect(record.trajectory.entries[1].feedback).toMatchObject({
+    contact: 'corner', landmark: {kind: 'corner', intensity: 1},
+    events: [{kind: 'contact-lost'}, {kind: 'contact', contact: 'corner'}],
+  });
+  expect(replayEpisode(record).status).toBe('verified');
+  expect(() => replayEpisode({...record, trajectory: {...record.trajectory, version: 3}})).toThrow(/disagrees/);
+});

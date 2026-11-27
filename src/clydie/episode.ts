@@ -1,5 +1,5 @@
 import {
-  createExperiment, createTactileSession, importExperiment, replayTactileTrajectory, serializeExperiment,
+  TACTILE_VERSION, createExperiment, createTactileSession, importExperiment, replayTactileTrajectory, serializeExperiment,
   type Experiment, type TactileCommand, type TactileFeedback, type TactileHand, type TactileTrajectory,
 } from '../lab';
 import {integer, ProviderError} from './controllers';
@@ -148,7 +148,7 @@ export async function runEpisode(controller: Controller, options: Partial<Settin
       if (memory.recent.length > config.recentLimit) memory.recent.shift();
     }
   }
-  const trajectory = session.trajectory() ?? {version: 2, pixelsPerUnit: config.pixelsPerUnit, entries: [], truncated: log.length > 0};
+  const trajectory = session.trajectory() ?? {version: TACTILE_VERSION, pixelsPerUnit: config.pixelsPerUnit, entries: [], truncated: log.length > 0};
   return {version: 1, started, elapsedMs: Math.round(performance.now() - start), controller: controller.metadata,
     settings: config, initial, decisions, trajectory, overflow: log.slice(trajectory.entries.length),
     ending, notebook: memory.notebook, experiment: session.experiment()};

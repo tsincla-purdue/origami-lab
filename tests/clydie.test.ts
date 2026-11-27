@@ -158,6 +158,7 @@ describe('bounded tactile exploration', () => {
 
   it.each([0, 1])('marks limited trajectories incomplete and keeps diagnostic feedback (limit %i)', async limit => {
     const r = await runEpisode(script({action: 'unfold'}, {action: 'flip'}, {action: 'stop'}), {trajectoryLimit: limit});
+    expect(r.trajectory.version).toBe(3);
     expect(r.trajectory.truncated).toBe(true);
     expect(r.trajectory.entries.length).toBe(limit);
     expect(r.overflow.length).toBe(2 - limit);
@@ -279,4 +280,15 @@ it('projects only the local landmark class and intensity', () => {
   const f = {motor: {x: .02, y: 0}, contact: 'edge', proximity: 1, snapped: false, events: [],
     landmark: {kind: 'corner', intensity: .33, position: {x: 0, y: 0}, facetId: 3, suggestedAction: 'move'}} as const;
   expect(observe(f).landmark).toEqual({kind: 'corner', intensity: .33});
+});
+
+it('presents a repeated trace as the same motor action with steady sensation', async () => {
+  const trace = {action: 'beginTrace', at: {x: .5, y: .5}};
+  const record = await runEpisode(script(trace, trace, {action: 'stop'}));
+  const {recent, handMode} = record.decisions[2].view;
+  expect(handMode).toBe('tracing');
+  expect(recent.map(entry => entry.action)).toEqual([trace, trace]);
+  expect(recent[0].sense.events).toEqual([{kind: 'contact', contact: 'surface'}]);
+  expect(recent[1].sense).toEqual({...recent[0].sense, events: []});
+  expect(summarize(record)).toMatchObject({motorCommands: 2, contacts: {surface: 1}});
 });

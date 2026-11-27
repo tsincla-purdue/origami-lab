@@ -18,7 +18,7 @@ export { solveCreaseThroughPoints, solvePointOntoLine } from './constraints';
 export type { ConstraintResult, ConstraintSolution } from './constraints';
 export { solveLineOntoLine, solvePerpendicularThroughPoint, resolveLineFold } from './line-constraints';
 export type { LineFoldIntent, LineReference } from './line-constraints';
-export { createTactileSession, replayTactileTrajectory } from './tactile';
+export { createTactileSession, replayTactileTrajectory, TACTILE_VERSION } from './tactile';
 export type {
   TactileCommand, TactileContact, TactileEvent, TactileFeedback, TactileHand, TactileOptions, TactileSnap, TactileTrajectory,
 } from './tactile';

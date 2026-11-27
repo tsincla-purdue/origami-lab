@@ -221,3 +221,33 @@ it('feels a displaced flap corner only from its exposed side', () => {
   expect(hidden.contact).toBe('surface');
   expect(hidden.landmark).toBeUndefined();
 });
+
+it('retains each stationary trace command with its current sensation until the finger lifts', () => {
+  const initial = createExperiment();
+  const session = createTactileSession(initial, {trajectoryLimit: 40});
+  const at = point(.005, 0);
+  const first = session.hand.beginTrace(at);
+  expect(first.events).toEqual([{kind: 'contact', motor: at, contact: 'corner'}]);
+  expect(first.landmark?.kind).toBe('corner');
+  for (let i = 0; i < 38; i++) expect(session.hand.beginTrace({...at})).toEqual({...first, events: []});
+  expect(session.trajectory()?.entries.map(e => e.command)).toEqual(Array(39).fill({kind: 'trace', at}));
+  expect(session.hand.release().events).toEqual([{kind: 'contact-lost', motor: at}]);
+  expect(session.hand.beginTrace(at)).toEqual(first);
+  expect(session.experiment()).toBe(initial);
+});
+
+it('distinguishes sampling a path from lifting and placing at a different point', () => {
+  const {hand} = createTactileSession(foldAndOpen(createExperiment(), vertical(.5)));
+  const left = point(.3, 0), right = point(.7, 0);
+  hand.beginTrace(left);
+  expect(hand.beginTrace(right).events).toEqual([
+    {kind: 'contact-lost', motor: left}, {kind: 'contact', motor: right, contact: 'edge'},
+  ]);
+  const sweep = hand.move(left);
+  expect(sweep.events).toContainEqual(expect.objectContaining({kind: 'contact', contact: 'intersection'}));
+  expect(sweep.contact).toBe('edge');
+  expect(hand.beginTrace(left).events).toEqual([]);
+  expect(hand.move(point(0, 0)).contact).toBe('corner');
+  expect(hand.move(point(-.1, 0)).events).toContainEqual(expect.objectContaining({kind: 'contact-lost'}));
+  expect(hand.move(point(0, 0)).events).toContainEqual(expect.objectContaining({kind: 'contact', contact: 'corner'}));
+});

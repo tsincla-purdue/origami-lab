@@ -134,7 +134,7 @@ it('unfolds on the reverse face and replays a flip, unfold, trace, and mark traj
   expect(importExperiment(serializeExperiment(finished))).toEqual(finished);
 
   const log = session.trajectory()!;
-  expect(log.version).toBe(2);
+  expect(log.version).toBe(3);
   expect(log.entries.map(entry => entry.command.kind)).toEqual(['drag', 'move', 'release', 'flip', 'unfold', 'trace', 'move', 'mark']);
   const replay = replayTactileTrajectory(initial, JSON.parse(JSON.stringify(log)));
   expect(replay.experiment).toEqual(finished);
