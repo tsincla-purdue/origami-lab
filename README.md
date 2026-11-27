@@ -7,6 +7,8 @@ flat folds. Origamio supplies polygon geometry, the folding operation, hinge
 diagnostics, and both SVG views. The lab supplies validation, candidate
 generation, experiment records, and FOLD export.
 
+To explore with a local model or seeded random controller, see the [Clydie v0 guide](docs/CLYDIE.md) and [first three recorded episodes](docs/verification/clydie-v0/README.md).
+
 ## Run the playground
 
 Node.js 24 or newer is required.

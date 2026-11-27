@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { gunzipSync } from 'node:zlib';
 import { spawnSync } from 'node:child_process';
 import { devices, expect, test } from '@playwright/test';
 
@@ -117,6 +118,22 @@ test.beforeEach(async ({page}) => {
   await page.goto('./');
   await expect(page.locator('#paper-handles .corner-touch')).toHaveCount(4);
   await page.locator('#paper').scrollIntoViewIfNeeded();
+});
+
+test('a human can fold the saved local-model episode and reimport the result', async ({page}) => {
+  const bytes = await readFile(new URL('../docs/verification/clydie-v0/a.json.gz', import.meta.url));
+  const {experiment} = JSON.parse(gunzipSync(bytes).toString());
+  await importJSON(page, experiment);
+  expect(await downloadJSON(page, 'Export experiment')).toEqual(experiment);
+  await page.locator('#paper').scrollIntoViewIfNeeded();
+  await dragCorner(page, [1, 0], [0, 0]);
+  const continued = await downloadJSON(page, 'Export experiment');
+  expect(continued.attempts.slice(0, -1)).toEqual(experiment.attempts);
+  expect(continued.attempts.at(-1).validation.status).toBe('accepted');
+  expect(continued.final.facets.length).toBeGreaterThan(experiment.final.facets.length);
+  await page.reload();
+  await importJSON(page, continued);
+  expect(await downloadJSON(page, 'Export experiment')).toEqual(continued);
 });
 
 test('the mouse and tactile hand commit the same snapped crease and material packet', async ({page}) => {
