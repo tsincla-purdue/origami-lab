@@ -22,7 +22,7 @@ Create `studio-info.json` outside the repository or under the ignored `runs/` di
 
 ## Run the comparison
 
-From the repository root, set `studio_info` to that file. This shell loop creates three fresh runs from the default square using the same motor step, virtual scale, decision limit and sampling settings. The tool condition uses ordinary function decoding. The two JSON conditions use a response schema. These decoding constraints and message layouts are part of the intervention.
+From the repository root, set `studio_info` to that file. This shell loop creates three fresh runs from the default square using the same motor step, virtual scale, decision limit and sampling settings. The tool condition uses ordinary function decoding. The two JSON conditions use a response schema. Both motor-only prompts give identical sensing and motor instructions. Decoding constraints, message roles, and history representation still differ. Motor JSON shows a bounded recent window. A tool result reports the full executed action with one hand position per sample, and older call/result pairs can be evicted. Use version 4 for both motor-only runs when comparing localized feedback.
 
 ```sh
 npm ci

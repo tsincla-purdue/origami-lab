@@ -25,3 +25,12 @@ it('replays a frozen version 2 episode with its original stationary corner recon
   expect(replayEpisode(record).status).toBe('verified');
   expect(() => replayEpisode({...record, trajectory: {...record.trajectory, version: 3}})).toThrow(/disagrees/);
 });
+
+it('replays version 3 native calls with their original endpoint-only tool results', () => {
+  const path = new URL('./fixtures/clydie-v3-native.json.gz', import.meta.url);
+  const record = JSON.parse(gunzipSync(readFileSync(path)));
+  expect(record.version).toBe(3);
+  expect(JSON.parse(record.decisions[0].tool.result.content)).not.toHaveProperty('positions');
+  expect(replayEpisode(record).status).toBe('verified');
+  expect(() => replayEpisode({...record, version: 4})).toThrow(/recorded tool call or host result/);
+});

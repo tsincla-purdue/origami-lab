@@ -76,7 +76,7 @@ type Decision = {
 };
 type Ending = 'motor-limit' | 'decision-limit' | 'duration' | 'model-timeout' | 'provider-error' | 'host-stop' | 'agent-stop';
 export interface Episode {
-  version: 2 | 3; memoryPolicy: typeof memoryPolicy; started: string; elapsedMs: number; controller: Controller['metadata']; settings: Settings;
+  version: 2 | 3 | 4; memoryPolicy: typeof memoryPolicy; started: string; elapsedMs: number; controller: Controller['metadata']; settings: Settings;
   initial: Experiment; decisions: Decision[]; trajectory: TactileTrajectory; overflow: Entry[];
   ending: Ending; inquiryNotebook: View['inquiryNotebook']; sensoryMemory: View['sensoryMemory']; experiment: Experiment;
 }
@@ -169,7 +169,7 @@ export async function runEpisode(controller: Controller, options: Partial<Settin
     if (choice.action === 'stop') { ending = 'agent-stop'; break; }
   }
   const trajectory = session.trajectory() ?? {version: TACTILE_VERSION, pixelsPerUnit: config.pixelsPerUnit, entries: [], truncated: log.length > 0};
-  return {version: mode === 'structured' ? 2 : 3, memoryPolicy: structuredClone(memoryPolicy), started, elapsedMs: Math.round(performance.now() - start), controller: controller.metadata,
+  return {version: mode === 'structured' ? 2 : 4, memoryPolicy: structuredClone(memoryPolicy), started, elapsedMs: Math.round(performance.now() - start), controller: controller.metadata,
     settings: config, initial, decisions, trajectory, overflow: log.slice(trajectory.entries.length),
     ending, inquiryNotebook: memory.inquiryNotebook, sensoryMemory: memory.sensoryMemory, experiment: session.experiment()};
 }
@@ -187,7 +187,7 @@ type HistoricalEpisode = Pick<Episode, 'initial' | 'experiment' | 'trajectory' |
 };
 
 export function replayEpisode(record: Episode | HistoricalEpisode) {
-  if (record.version !== 1 && record.version !== 2 && record.version !== 3) throw new Error('Unsupported Clydie episode version.');
+  if (record.version !== 1 && record.version !== 2 && record.version !== 3 && record.version !== 4) throw new Error('Unsupported Clydie episode version.');
   const initial = importExperiment(JSON.stringify(record.initial));
   const {trajectory} = record;
   if (trajectory.truncated || record.overflow.length) return {status: 'incomplete' as const};
@@ -232,7 +232,7 @@ export function replayEpisode(record: Episode | HistoricalEpisode) {
     for (const d of record.decisions) {
       const view = memory.view(correction);
       if (sortedJSON(d.view) !== sortedJSON(view)) throw new Error('Replay disagrees with recorded controller view.');
-      if (record.version === 3 && d.raw !== undefined) {
+      if (record.version >= 3 && d.raw !== undefined) {
         const {instructions, inputBudget} = record.controller;
         if (typeof instructions !== 'string' || typeof inputBudget !== 'number' || !Number.isFinite(inputBudget)) {
           throw new Error('Missing recorded input configuration.');
@@ -262,14 +262,14 @@ export function replayEpisode(record: Episode | HistoricalEpisode) {
         if (!expected.next().done && !(interrupted && d === record.decisions.at(-1))) {
           throw new Error('Recorded decision ends before its motor path is complete.');
         }
-        const exchange = call && toolExchange(call, d.motorStart, senses, memory);
+        const exchange = call && toolExchange(call, d.motorStart, senses, memory, record.version >= 4);
         if (sortedJSON(exchange) !== sortedJSON(d.tool)) throw new Error('Replay disagrees with recorded tool call or host result.');
         if (exchange) rememberTool(turns, {...exchange, before: view}, config.recentLimit);
         correction = undefined;
       } else {
         if (d.motorCount || d.inquiry || d.tool) throw new Error('Invalid decision issued motor commands or inquiry.');
         // Only format failures can lead to another request. Transport and deadline errors end the run.
-        if (d !== record.decisions.at(-1) || (record.version === 3 && record.ending === 'decision-limit')) {
+        if (d !== record.decisions.at(-1) || (record.version >= 3 && record.ending === 'decision-limit')) {
           if (d.raw === undefined) throw new Error('Missing model reply before correction.');
           let error: string | undefined;
           try { decode(d.raw, mode); } catch (err) { error = formatError(err); }
@@ -278,7 +278,7 @@ export function replayEpisode(record: Episode | HistoricalEpisode) {
         }
       }
     }
-    if (record.version === 3 && ((record.ending === 'agent-stop') !== (record.decisions.at(-1)?.choice?.action === 'stop') ||
+    if (record.version >= 3 && ((record.ending === 'agent-stop') !== (record.decisions.at(-1)?.choice?.action === 'stop') ||
         record.decisions.slice(0, -1).some(d => d.choice?.action === 'stop'))) {
       throw new Error('Replay disagrees with recorded stop decision.');
     }

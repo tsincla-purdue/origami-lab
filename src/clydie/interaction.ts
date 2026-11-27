@@ -46,7 +46,8 @@ export function rememberTool(turns: ToolTurn[], turn: ToolTurn, limit: number) {
   if (turns.length > limit) turns.shift();
 }
 
-export function toolExchange(call: Call, motorStart: number, senses: Sense[], after: Pick<View, 'motor' | 'handMode'>): ToolExchange {
+export function toolExchange(call: Call, motorStart: number, senses: Sense[], after: Pick<View, 'motor' | 'handMode'>,
+  includePositions = true): ToolExchange {
   // The range is linear. Keep every successive reading (and repeated event) without repeating stationary fields.
   type Reading = Omit<Sense, 'motor'>;
   const readings: {count: number; sense?: Reading; changes?: Record<string, unknown>}[] = [];
@@ -63,7 +64,8 @@ export function toolExchange(call: Call, motorStart: number, senses: Sense[], af
     }
     previous = sense;
   }
-  const content = JSON.stringify({motorStart, motorCount: senses.length, motor: after.motor, handMode: after.handMode, readings});
+  const positions = includePositions ? senses.map(({motor}) => [motor.x, motor.y]) : undefined;
+  const content = JSON.stringify({motorStart, motorCount: senses.length, motor: after.motor, handMode: after.handMode, readings, positions});
   return {call, result: {role: 'tool', tool_call_id: call.id, content}};
 }
 
@@ -85,7 +87,7 @@ export function motorMessages(prompt: string, view: View, history: readonly Tool
       if (turns.length > 1) break;
       if (snapshot.sensoryMemory.length) snapshot.sensoryMemory.shift();
       else if (snapshot.recent.length > (turns.length ? 0 : 1)) snapshot.recent.shift();
-      else throw new Error('Complete motor feedback exceeds the configured input budget.');
+      else throw new Error(`Complete model input needs ${inputBytes} bytes, exceeding the ${inputBudget}-byte input budget.`);
     }
     turns.shift(); // Always retain the most recent complete assistant/result pair.
   }

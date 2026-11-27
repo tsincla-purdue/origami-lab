@@ -106,7 +106,7 @@ async function main() {
   await writeFile(join(directory, 'experiment.json'), serializeExperiment(episode.experiment));
   console.log(directory);
   console.log(JSON.stringify({...summary, motorReplay: replayEpisode(episode).status}, null, 2));
-  if (episode.version === 3 && episode.ending === 'decision-limit' && !episode.decisions.some(d => d.choice)) {
+  if (episode.version >= 3 && episode.ending === 'decision-limit' && !episode.decisions.some(d => d.choice)) {
     console.error('Decision budget exhausted without a valid motor choice.');
     process.exitCode = 1;
   }

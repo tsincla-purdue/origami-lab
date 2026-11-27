@@ -50,12 +50,15 @@ ${jsonMotorInstructions}`;
 
 export type Interaction = 'structured' | 'motor-json' | 'native-tools';
 export function motorInstructions(native: boolean) {
-  if (native) return `${invitation}
+  const shared = `${invitation}
 
-Measurement contract
-Only host readings report sensations. Zero proximity means no local signal. Events are ordered. The hand cannot sense texture, stiffness, pressure, sound or elasticity. Apply changes to the first sense in order. Each count repeats the whole reading including its events.
-Request one motor function. ${motors} mark marks the contact, flip turns over, unfold opens the last fold, stop ends play. ${workspace}`;
-  return `${contract}\n\n${jsonMotorInstructions}`;
+Only host readings report sensations. The hand cannot sense texture, stiffness, pressure, sound or elasticity. Zero proximity only means no local signal. No reported change describes only the sensors. Events are ordered. Deltas exclude position. The action you choose now has not happened. Feedback follows.
+
+beginTrace lifts and repositions unless stationary. move samples the path. beginDrag tries gripping an accessible corner, exposed edge or feature. Interior grips can fail. After failure move moves only the hand. Grips can meet resistance. release lifts or lets go and may fold. mark marks contact, flip turns over, unfold opens the last fold, stop ends play. Trace, drag and move take x,y in [-1,2]. Initial square [0,1] per axis, y up. Proximity and landmark intensity span [0,1].`;
+  const wire = native
+    ? 'Call one function. Apply changes in order. count repeats a reading and its events. positions lists each [x,y].'
+    : 'Return one JSON action. Put x and y in at for positioned actions. Omit at otherwise.';
+  return `${shared}\n\n${wire}`;
 }
 
 export function object(value: unknown): value is Record<string, unknown> {

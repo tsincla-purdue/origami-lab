@@ -23,9 +23,12 @@ const controller = (interaction: Interaction) => lmstudioController('mock', {int
 const native = (a: Action, i: number) => response(call(a.action, JSON.stringify('at' in a ? a.at : {}), String(i)));
 const json = (a: object) => ({role: 'assistant', content: JSON.stringify(a)});
 
-it('executes the same motor choices and preserves intermediate observations across all three interfaces', async () => {
+it.each([
+  {from: .3, to: .7, crossingSample: .5},
+  {from: .3125, to: .6875, crossingSample: .5625},
+])('localizes the crossing at hand sample $crossingSample across the same three motor paths', async ({from, to, crossingSample}) => {
   const initial = recordUnfold(recordMove(createExperiment(), {line: [[.5, 0], [.5, 1]], side: -1}));
-  const choices: Action[] = [{action: 'beginTrace', at: {x: .3, y: 0}}, {action: 'move', at: {x: .7, y: 0}},
+  const choices: Action[] = [{action: 'beginTrace', at: {x: from, y: 0}}, {action: 'move', at: {x: to, y: 0}},
     {action: 'release'}, {action: 'beginDrag', at: {x: .5, y: .5}}, {action: 'stop'}];
   const runs = [];
   for (const mode of ['structured', 'motor-json', 'native-tools'] as const) {
@@ -62,15 +65,34 @@ it('executes the same motor choices and preserves intermediate observations acro
       const {motor, ...reading} = observe(feedback, command);
       return reading;
     }));
-    expect(readings.flatMap((s: any) => s.events)).toContainEqual({kind: 'contact', contact: 'intersection'});
+    const moveEntries = r.trajectory.entries.slice(move.motorStart, move.motorStart + move.motorCount);
+    expect(report.positions).toEqual(moveEntries.map(({feedback: {motor}}) => [motor.x, motor.y]));
+    const crossing = readings.findIndex((s: any) => s.events.some((e: any) => e.contact === 'intersection'));
+    expect(crossing).toBeGreaterThan(0);
+    expect(crossing).toBeLessThan(move.motorCount - 1);
+    expect(report.positions[crossing]).toEqual([crossingSample, 0]);
+    expect(readings[crossing].events).toContainEqual({kind: 'contact', contact: 'intersection'});
     expect(JSON.stringify(requests)).not.toMatch(/facetId|no-grab|validation.code|diagnostic prose/);
     expect(r.decisions[0].raw).toContain('diagnostic prose');
-    expect(r.decisions.at(-1)?.tool?.result.content).toContain('"motorCount":0');
+    expect(JSON.parse(r.decisions.at(-1)!.tool!.result.content)).toMatchObject({motorCount: 0, positions: []});
   }
   for (const r of runs.slice(1)) {
     expect(r.trajectory).toEqual(runs[0].trajectory);
     expect(r.experiment).toEqual(runs[0].experiment);
   }
+});
+
+it('gives both motor-only conditions the same sensing contract and motor semantics', () => {
+  const shared = (mode: Interaction) => {
+    const prompt = String(controller(mode).metadata.instructions);
+    return prompt.slice(0, prompt.lastIndexOf('\n\n'));
+  };
+  const contract = shared('motor-json');
+  expect(shared('native-tools')).toBe(contract);
+  expect(contract).toContain('The action you choose now has not happened');
+  expect(contract).toContain('No reported change describes only the sensors');
+  expect(contract).toContain('After failure move moves only the hand');
+  expect(contract).toContain('[-1,2]');
 });
 
 it('rejects missing, multiple, malformed and unsupported calls, then recovers on a real tool call', async () => {
@@ -124,19 +146,34 @@ it('verifies a budget-interrupted tool move and detects tampered calls, ranges a
   mock([native({action: 'move', at: {x: 1, y: 0}}, 0)]);
   const r = await runEpisode(controller('native-tools'), {maxCommands: 2});
   expect(r.ending).toBe('motor-limit');
-  expect(JSON.parse(r.decisions[0].tool!.result.content)).toMatchObject({motorStart: 0, motorCount: 2, motor: {x: .25, y: 0}});
+  expect(JSON.parse(r.decisions[0].tool!.result.content)).toMatchObject({motorStart: 0, motorCount: 2, motor: {x: .25, y: 0}, positions: [[.125, 0], [.25, 0]]});
   expect(replayEpisode(r).status).toBe('verified');
   for (const change of [
     (d: typeof r.decisions[number]) => {d.raw = JSON.stringify(native({action: 'move', at: {x: 0, y: 1}}, 0));},
     (d: typeof r.decisions[number]) => {d.tool!.call.id = 'other';},
     (d: typeof r.decisions[number]) => {d.tool!.result.tool_call_id = 'other';},
     (d: typeof r.decisions[number]) => {d.tool!.result.content = d.tool!.result.content.replace('"motorStart":0', '"motorStart":1');},
-    (d: typeof r.decisions[number]) => {d.tool!.result.content = '{"contact":"corner"}';},
+    (d: typeof r.decisions[number]) => {
+      const report = JSON.parse(d.tool!.result.content);
+      report.positions[0][0] = .5;
+      d.tool!.result.content = JSON.stringify(report);
+    },
   ]) {
     const copy = structuredClone(r);
     change(copy.decisions[0]);
     expect(() => replayEpisode(copy)).toThrow(/disagrees/);
   }
+});
+
+it('retains every hand position when a complete tool result is too large for the next request', async () => {
+  const requests = mock([native({action: 'move', at: {x: .91, y: .82}}, 0)]);
+  const r = await runEpisode(controller('native-tools'), {step: .02});
+  expect(r.ending).toBe('provider-error');
+  expect(requests).toHaveLength(1);
+  expect(r.decisions[1].error).toMatch(/exceeding the 3840-byte input budget/);
+  const report = JSON.parse(r.decisions[0].tool!.result.content);
+  expect(report.positions).toEqual(r.trajectory.entries.map(({feedback: {motor}}) => [motor.x, motor.y]));
+  expect(replayEpisode(r).status).toBe('verified');
 });
 
 it('keeps the last host result paired through a correction and preserves dropped-response diagnostics', async () => {
