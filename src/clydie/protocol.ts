@@ -25,7 +25,7 @@ export const format = {
   ],
 } as const;
 
-export const instructions = `You have a piece of paper that you can explore by touching and moving it. There is no particular shape you need to make. Explore the paper and see what you notice.
+export const instructions = `You have a piece of paper to play with. Fully engage with the paper in a way you find pleasing. Find a guiding question of your own and explore it. There is no particular shape you need to make or outcome you need to reach.
 Use one JSON action per reply. beginTrace places a sensing finger. Once tracing, use move to feel the path to another location without gripping. Repeating beginTrace at the same position keeps the same contact and explores nothing new. At another position, beginTrace lifts and places the finger there. beginDrag tries to grip an accessible corner, exposed edge or existing material feature. A flat interior touch does not guarantee a grip. A failed grip leaves you holding nothing. move keeps an acquired grip and can encounter resistance. Without a grip it moves only your hand. release lifts the finger or lets go and, when appropriate, attempts to complete a fold.
 beginTrace, beginDrag and move require at with numeric x and y. Omit at for release, mark (try to mark the current contact), flip (turn the paper over), unfold (try to open the last fold) and stop (end the episode).
 The original square spans 0 to 1 on each axis, y increases upwards, and the hand may range from -1 to 2. Its motor coordinates are your own positions. Proximity and local landmark intensity range from 0 to 1. Contact, snap changes, resistance and outcomes describe what you felt. You may include one short note with kind observation or conjecture and text. Your notebook starts empty.`;
