@@ -4,17 +4,9 @@ import { hinges } from '../../vendor/origamio/src/rigid';
 import type { MaterialPacket } from './packets';
 import { paperInView } from './paper-pose';
 
-function expand(seeds: Iterable<number>, links: ReadonlyMap<number, number[]>, within?: ReadonlySet<number>): Set<number> {
-  const found = new Set(seeds);
-  for (const id of found) {
-    for (const neighbour of links.get(id) ?? []) {
-      if (!within || within.has(neighbour)) found.add(neighbour);
-    }
-  }
-  return found;
-}
+type Link = {to: number; kind: 'moving-weld' | 'on-axis-weld' | 'cover'};
 
-/** Material hypotheses for an unchanged axis and moving side. The validator decides which can fold. */
+/** Hypotheses for a grab swinging toward the exposed face of the current view. */
 export function packetCandidates(paper: PaperState, local: readonly MaterialPacket[], axis: Line, side: Side): MaterialPacket[] {
   if (!local.length) return [];
   const state = paperInView(paper);
@@ -26,14 +18,21 @@ export function packetCandidates(paper: PaperState, local: readonly MaterialPack
     return poly.length ? [{id: facet.id, z: facet.z, poly}] : [];
   });
   const active = new Set(moving.map(facet => facet.id));
-  const required = new Map<number, number[]>();
-  const joins = new Map<number, number[]>();
-  function link(graph: Map<number, number[]>, p: number, q: number) {
-    graph.set(p, [...(graph.get(p) ?? []), q]);
+  const links = new Map<number, Link[]>();
+  function link(from: number, to: number, kind: Link['kind']) {
+    const outgoing = links.get(from);
+    if (outgoing) outgoing.push({to, kind});
+    else links.set(from, [{to, kind}]);
   }
-  function carry(p: number, q: number) {
-    link(required, p, q);
-    link(joins, p, q);
+  function expand(seeds: Iterable<number>, scope: 'forced' | 'with-axis-joins', within?: ReadonlySet<number>) {
+    const found = new Set(seeds);
+    for (const id of found) {
+      for (const {to, kind} of links.get(id) ?? []) {
+        if (kind === 'on-axis-weld' && scope === 'forced') continue;
+        if (!within || within.has(to)) found.add(to);
+      }
+    }
+    return found;
   }
   for (const {p, q, a, b} of hinges(state)) {
     if (!active.has(p) || !active.has(q)) continue;
@@ -42,11 +41,11 @@ export function packetCandidates(paper: PaperState, local: readonly MaterialPack
     // An attachment off the axis must move with the packet. A hinge on the axis
     // can connect a larger interpretation, but need not move with the first flap.
     if (reach.some(value => value > EPS)) {
-      carry(p, q);
-      carry(q, p);
+      link(p, q, 'moving-weld');
+      link(q, p, 'moving-weld');
     } else if (reach.every(value => Math.abs(value) <= EPS)) {
-      link(joins, p, q);
-      link(joins, q, p);
+      link(p, q, 'on-axis-weld');
+      link(q, p, 'on-axis-weld');
     }
   }
   // An overlying ply can obstruct the swing even when its old weld lies
@@ -54,13 +53,15 @@ export function packetCandidates(paper: PaperState, local: readonly MaterialPack
   // The reverse dependency would incorrectly pick up lower, stationary plies.
   for (const lower of moving) {
     for (const upper of moving) {
-      if (upper.z > lower.z && area(intersectConvex(lower.poly, upper.poly)) > AREA_EPS) carry(lower.id, upper.id);
+      if (upper.z > lower.z && area(intersectConvex(lower.poly, upper.poly)) > AREA_EPS) {
+        link(lower.id, upper.id, 'cover');
+      }
     }
   }
 
   const candidates = new Map<string, MaterialPacket>();
   function add(ids: ReadonlySet<number>) {
-    if (!ids.has(top) || expand([top], joins, ids).size !== ids.size) return;
+    if (!ids.has(top) || expand([top], 'with-axis-joins', ids).size !== ids.size) return;
     const facetIds = [...ids].sort((a, b) => a - b);
     candidates.set(facetIds.join(), {facetIds});
   }
@@ -68,8 +69,8 @@ export function packetCandidates(paper: PaperState, local: readonly MaterialPack
   add(new Set([top]));
   for (const {facetIds} of local) {
     if (!facetIds.every(id => active.has(id))) continue;
-    add(expand(facetIds, required));
+    add(expand(facetIds, 'forced'));
   }
-  add(expand([top], joins));
+  add(expand([top], 'with-axis-joins'));
   return [...candidates.values()].sort((a, b) => a.facetIds.length - b.facetIds.length);
 }

@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from scripts.audit_experiment import AREA, DIST, audit, dot, edges, frame, polygon, transform, unit, world  # noqa: E402
+from scripts.audit_experiment import AREA, DIST, area, audit, dot, edges, frame, polygon, transform, unit, world  # noqa: E402
 from silhouette import coverage, hull, uncovered_edge  # noqa: E402
 
 HEXAGON = ROOT / "tests/fixtures/perfect-imperfect-hexagon.json"
@@ -270,6 +270,28 @@ class IndependentAudit(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertEqual(asymmetries, [])
         self.assertLess(max_drift, 1e-8)
+
+    def test_upper_strip_under_axis_reversal_turnover_and_small_perturbations(self):
+        for offset, histories in zip((-1, 0, 1), self.fixtures["packetSymmetries"], strict=True):
+            width = 3 / 16 + offset / 1024
+            original = histories[0]["attempts"][-2]["state"]
+            for experiment in histories:
+                with self.subTest(width=width, move=experiment["attempts"][-2]["move"]):
+                    self.assert_structural(experiment)
+                    before, swing, opened = experiment["attempts"][-3:]
+                    self.assertEqual(swing["validation"]["code"], "packet-fold")
+                    self.assertEqual(opened["move"]["foldAttempt"], len(experiment["attempts"]) - 1)
+                    final = swing["state"]
+                    # These dyadic cuts yield exactly the same intrinsic geometry in all three frames.
+                    self.assertEqual(final["facets"], original["facets"])
+                    base, upper, tip = final["facets"]
+                    self.assertEqual([base["id"], upper["id"], tip["id"]], [0, 1, 2])
+                    self.assertEqual(area(polygon(tip)), width)
+                    self.assertEqual(transform(tip, (1, 1)), (2 * width, 1))
+                    self.assertEqual(opened["state"]["facets"], before["state"]["facets"])
+                    self.assertEqual(opened["state"]["marks"], before["state"]["marks"])
+                    self.assertEqual(opened["state"]["creases"], final["creases"])
+                    self.assertEqual(len(final["creases"]), len(before["state"]["creases"]) + 1)
 
     def test_numerical_threshold_sweep(self):
         near = [("rejected", "no-op"), ("unverified", "near-axis"), ("unverified", "near-axis"),

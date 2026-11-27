@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { apply as mapPoint, area, distance, perpendicularBisector, sideOf } from '../vendor/origamio/src/geometry';
+import { apply as mapPoint, area, containsPoint, distance, intersectConvex, perpendicularBisector, sideOf } from '../vendor/origamio/src/geometry';
 import { currentPolygon } from '../vendor/origamio/src/paper';
 import { tears } from '../vendor/origamio/src/rigid';
 import {
-  apply, cornerPackets, createExperiment, importExperiment, initialState, recordMove,
+  apply, cornerPackets, createExperiment, importExperiment, initialState, recordMove, recordUnfold,
   serializeExperiment, stateAt, undoMove, validate, type Move, type PaperState,
 } from '../src/lab';
 import { packetHingeLanding } from '../src/lab/packets';
@@ -95,6 +95,42 @@ describe('explicit material packets', () => {
     const under = apply(folded, { ...half, side: -1, packet: {facetIds: [0]}, placement: 'bottom' });
     expect(under.validation.code).toBe('packet-fold');
     checkMotion(folded, under.state, [0]);
+  });
+
+  it('certifies a fresh upper-ply split but leaves the same swing at an inherited flat seam unverified', () => {
+    // Both legal histories retain the score at x = 3/4. Only the fold back retains its mesh seam.
+    const score: Move = {line: [[.75, 0], [.75, 1]], side: -1};
+    const scored = recordMove(createExperiment(), score);
+    const foldedBack = recordMove(scored, {...score, side: 1, packet: {facetIds: [1]}});
+    expect(foldedBack.attempts.at(-1)?.validation.code).toBe('packet-fold');
+    const coarse = recordMove(recordUnfold(scored), rightHalf).final;
+    const refined = recordMove(foldedBack, rightHalf).final;
+    expect(refined.creases).toEqual(coarse.creases);
+    expect(coarse.facets).toHaveLength(2);
+    expect(refined.facets).toHaveLength(3);
+    const [base, upper] = coarse.facets;
+    const [otherBase, strip, rest] = refined.facets;
+    expect(otherBase).toEqual(base);
+    for (const part of [strip, rest]) {
+      expect(part.transform).toEqual(upper.transform);
+      expect(part.z).toBeGreaterThan(base.z);
+      expect(part.poly.every(p => containsPoint(upper.poly, p))).toBe(true);
+    }
+    expect(upper.z).toBeGreaterThan(base.z);
+    expect(area(intersectConvex(strip.poly, rest.poly))).toBe(0);
+    expect(area(strip.poly) + area(rest.poly)).toBe(area(upper.poly));
+    expect(strip.poly.every(p => p.x >= .75)).toBe(true);
+    expect(rest.poly.every(p => p.x <= .75)).toBe(true);
+
+    const swing: Move = {line: [[.25, 0], [.25, 1]], side: 1};
+    const probe = {x: 0, y: 1};
+    expect(cornerPackets(coarse, probe)[0].facetIds).toEqual([upper.id]);
+    expect(cornerPackets(refined, probe)[0].facetIds).toEqual([strip.id]);
+    expect(validate(coarse, {...swing, packet: {facetIds: [upper.id]}}))
+      .toMatchObject({status: 'accepted', code: 'packet-fold'});
+    const attempt = apply(refined, {...swing, packet: {facetIds: [strip.id]}});
+    expect(attempt.validation).toMatchObject({status: 'unverified', code: 'hinge-cover'});
+    expect(attempt.state).toBe(refined);
   });
 
   it('keeps non-flat and inside motions unverified and validates packet identities', () => {

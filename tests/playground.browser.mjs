@@ -1748,6 +1748,47 @@ test.describe('touch', () => {
   const { defaultBrowserType, ...touchDevice } = devices['iPhone 13'];
   test.use(touchDevice);
 
+  test('a deep dog-ear carries the same material for a touch drag and the tactile hand', async ({page, context}) => {
+    const cdp = await context.newCDPSession(page);
+    async function touchDrag(from, to) {
+      await cdp.send('Input.dispatchTouchEvent', {type: 'touchStart', touchPoints: [await screenPoint(page, ...from)]});
+      await cdp.send('Input.dispatchTouchEvent', {type: 'touchMove', touchPoints: [await screenPoint(page, ...to)]});
+      await cdp.send('Input.dispatchTouchEvent', {type: 'touchEnd', touchPoints: []});
+    }
+    const drags = [[[1, 0], [.5, 1]], [[0, 1], [.7, .21]]];
+    await touchDrag(...drags[0]);
+    // At phone scale the original deep destination offers two snap axes on release.
+    await touchDrag([0, 1], [.84, .12]);
+    await expect(page.getByRole('combobox', {name: 'Snap target'}).locator('option')).toHaveCount(2);
+    await expect(page.locator('#history-count')).toHaveText('1 attempt');
+    await page.getByRole('button', {name: 'Cancel', exact: true}).tap();
+    await page.locator('#paper').scrollIntoViewIfNeeded();
+    await touchDrag(...drags[1]);
+    const pointer = await downloadJSON(page, 'Export experiment');
+    const headless = await page.evaluate(async drags => {
+      const {createExperiment, createTactileSession} = await import(new URL('./api/index.js', location.href).href);
+      const {a, b} = document.querySelector('#paper-scene').getScreenCTM();
+      const session = createTactileSession(createExperiment(), {pixelsPerUnit: Math.hypot(a, b)});
+      for (const [[x, y], [tx, ty]] of drags) {
+        session.hand.beginDrag({x, y});
+        session.hand.move({x: tx, y: ty});
+        session.hand.release();
+      }
+      return session.experiment();
+    }, drags);
+    for (const experiment of [pointer, headless]) {
+      expect(experiment.attempts).toHaveLength(2);
+      expect(experiment.attempts[1]).toMatchObject({
+        move: {packet: {facetIds: [0, 1]}}, validation: {status: 'accepted', code: 'simple-fold'},
+      });
+      expect(experiment.final.facets.map(facet => facet.id)).toEqual([0, 1, 3, 2]);
+      const {c, d, e, f} = experiment.final.facets.at(-1).transform;
+      // The material corner (0, 1) follows the hand to the freehand destination.
+      expect(c + e).toBeCloseTo(.7, 4);
+      expect(d + f).toBeCloseTo(.21, 4);
+    }
+  });
+
   test('an ordinary touch drag opens the half-fold from its free edge', async ({page, context}) => {
     const session = await context.newCDPSession(page);
     const touch = (type, point) => session.send('Input.dispatchTouchEvent', {type, touchPoints: point ? [point] : []});
