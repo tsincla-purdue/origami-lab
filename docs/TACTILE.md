@@ -31,10 +31,23 @@ sampled at intervals of at most 2 virtual pixels.
   linearly from zero at 12 virtual pixels to one on the closest exposed
   feature. Off the sheet, there is no contact or warmth. During a drag the
   signal uses the closest eligible solver score over the snap's release band.
-- `contact` reports surface, edge, crease, intersection, or a previously
+- `contact` reports surface, edge, crease, corner, intersection, or a previously
   marked point, with events when the contact changes or ends. Feature contacts
   occur within 3 virtual pixels. Several events can occur during one move.
   Marking requires the probe to be at an eligible intersection when called.
+- While tracing, optional `landmark` reports a `kind` (corner, intersection, or mark)
+  and `intensity` for the closest such feature on the exposed face. At distance
+  *d* in virtual pixels the intensity is `1 − d/12` for *d* below 12. At 12
+  pixels and beyond the cue is absent. The signal can rise along an edge or
+  crease even while ordinary proximity stays at one. Both the probe and the
+  feature must lie on the same topmost face. Crossing a layer boundary can
+  therefore end the signal abruptly. It conveys no bearing or target position.
+- Among equally near landmarks the tie order is mark, intersection, corner.
+  Contact still uses the 3-pixel band. A corner takes precedence over a crease,
+  a crease over an edge and an edge over plain surface. An intersection or mark
+  takes precedence over a corner. As before, a marked intersection feels like a
+  mark, and a distinct nearby intersection can still be contacted for marking.
+  Corners come from the shared exposed facet vertices in the displayed pose.
 - `snap-acquired` identifies a point, line alignment, axis, or opening constraint.
   The normal playground threshold is 13 virtual pixels on the candidate
   score. The snap remains locked out to 19.5 virtual pixels. `snap-lost`
@@ -155,3 +168,8 @@ runs the recorded commands again from the same starting experiment and recompute
 their feedback. Sensations and refused releases stay outside the canonical
 experiment export. Accepted folds, marks, and turnovers use the normal
 experiment format and replay.
+
+New tactile logs carry `trajectory.version = 2`. Replay selects the sampler
+from the saved version. Version 1 preserves the earlier edge contact at a
+corner and omits landmark intensity. The canonical experiment format tracks
+material operations independently of these sensory versions.

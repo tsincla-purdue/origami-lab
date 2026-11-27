@@ -6,7 +6,7 @@ import {integer, ProviderError} from './controllers';
 import {observe, parseChoice, type Action, type Choice, type Controller, type Point, type View} from './protocol';
 
 export {lmstudioController, ollamaController, randomController} from './controllers';
-export {importExperiment, serializeExperiment};
+export {importExperiment, observe, serializeExperiment};
 export const defaults = {
   maxCommands: 100, maxDecisions: 100, durationMs: 600000, timeoutMs: 30000, step: .125,
   pixelsPerUnit: 400, trajectoryLimit: 2048, recentLimit: 6, notebookLimit: 6,
@@ -144,11 +144,11 @@ export async function runEpisode(controller: Controller, options: Partial<Settin
         case 'release': case 'flip': case 'unfold': memory.handMode = 'idle'; break;
       }
       memory.motor = feedback.motor;
-      memory.recent.push({action: asAction(command), sense: observe(feedback)});
+      memory.recent.push({action: asAction(command), sense: observe(feedback, command)});
       if (memory.recent.length > config.recentLimit) memory.recent.shift();
     }
   }
-  const trajectory = session.trajectory() ?? {version: 1, pixelsPerUnit: config.pixelsPerUnit, entries: [], truncated: log.length > 0};
+  const trajectory = session.trajectory() ?? {version: 2, pixelsPerUnit: config.pixelsPerUnit, entries: [], truncated: log.length > 0};
   return {version: 1, started, elapsedMs: Math.round(performance.now() - start), controller: controller.metadata,
     settings: config, initial, decisions, trajectory, overflow: log.slice(trajectory.entries.length),
     ending, notebook: memory.notebook, experiment: session.experiment()};

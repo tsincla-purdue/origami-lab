@@ -1,6 +1,6 @@
 import { distance, lerp, scale, type Mat, type Vec } from '../../vendor/origamio/src/geometry';
 import { createGestureInterpreter, type ConstraintIssue, type Draft } from '../playground/gestures';
-import type { SurfaceContact } from '../playground/geometry';
+import type { Landmark, SurfaceContact } from '../playground/geometry';
 import { commitInterpretation, interpretGesture, uniqueAccepted } from '../playground/intent';
 import type { Validation } from './engine';
 import {
@@ -22,6 +22,7 @@ export interface TactileFeedback {
   readonly motor: Vec;
   readonly proximity: number;
   readonly contact?: TactileContact;
+  readonly landmark?: Landmark;
   readonly snapped: boolean;
   readonly events: readonly TactileEvent[];
   readonly validation?: Validation;
@@ -42,13 +43,14 @@ export type TactileCommand =
   | {readonly kind: 'release' | 'mark' | 'flip' | 'unfold'};
 
 export interface TactileTrajectory {
-  readonly version: 1;
+  readonly version: 1 | 2;
   readonly pixelsPerUnit: number;
   readonly entries: readonly {readonly command: TactileCommand; readonly feedback: TactileFeedback}[];
   readonly truncated: boolean;
 }
 
 export interface TactileOptions {
+  readonly sensoryVersion?: TactileTrajectory['version'];
   /** Similarity transform used for the shared screen-space gesture thresholds. */
   readonly pixelsPerUnit?: number;
   /** Retain this many commands in a separate replayable log, up to 2048. Defaults to zero. */
@@ -81,6 +83,8 @@ function run(hand: TactileHand, command: TactileCommand): TactileFeedback {
 /** Give the controller only `hand`. The host owns the experiment and diagnostic log. */
 export function createTactileSession(initial: Experiment, options: TactileOptions = {}) {
   let experiment = initial;
+  const version = options.sensoryVersion ?? 2;
+  if (version !== 1 && version !== 2) throw new Error('Unsupported tactile sensory version.');
   const pixelsPerUnit = options.pixelsPerUnit ?? 400;
   const logLimit = options.trajectoryLimit ?? 0;
   if (!Number.isFinite(pixelsPerUnit) || pixelsPerUnit < 32 || pixelsPerUnit > 4096) {
@@ -143,7 +147,7 @@ export function createTactileSession(initial: Experiment, options: TactileOption
   }
 
   function trace(at: Vec) {
-    const next = gestures.surfaceAt(at, WARM_PIXELS / pixelsPerUnit, CONTACT_PIXELS / pixelsPerUnit) ?? {proximity: 0};
+    const next = gestures.surfaceAt(at, WARM_PIXELS / pixelsPerUnit, CONTACT_PIXELS / pixelsPerUnit, version) ?? {proximity: 0};
     if (next.key !== surface.key) {
       if (next.contact) events.push({kind: 'contact', motor: at, contact: next.contact});
       else if (surface.contact) events.push({kind: 'contact-lost', motor: at});
@@ -272,7 +276,7 @@ export function createTactileSession(initial: Experiment, options: TactileOption
     }
     if (verdict && verdict.status !== 'accepted') resistance(verdict);
     const feedback = {motor: position, proximity: mode === 'trace' ? surface.proximity : gestures.snapObservation().proximity,
-      contact: surface.contact, snapped: lock !== undefined, events, validation: verdict};
+      ...(surface.landmark && {landmark: surface.landmark}), contact: surface.contact, snapped: lock !== undefined, events, validation: verdict};
     if (logLimit && !truncated) {
       if (entries.length >= logLimit || loggedEvents + events.length > MAX_LOG_EVENTS) truncated = true;
       else {
@@ -297,17 +301,17 @@ export function createTactileSession(initial: Experiment, options: TactileOption
     hand,
     experiment: () => experiment,
     trajectory: (): TactileTrajectory | undefined => logLimit
-      ? structuredClone({version: 1, pixelsPerUnit, entries, truncated})
+      ? structuredClone({version, pixelsPerUnit, entries, truncated})
       : undefined,
   };
 }
 
 /** Replay motor inputs from a log's starting experiment. Saved sensations are never authoritative. */
 export function replayTactileTrajectory(initial: Experiment, trajectory: TactileTrajectory) {
-  if (trajectory.version !== 1 || trajectory.entries.length > MAX_LOG_ENTRIES) {
+  if ((trajectory.version !== 1 && trajectory.version !== 2) || trajectory.entries.length > MAX_LOG_ENTRIES) {
     throw new Error('Unsupported tactile trajectory.');
   }
-  const session = createTactileSession(initial, {pixelsPerUnit: trajectory.pixelsPerUnit});
+  const session = createTactileSession(initial, {pixelsPerUnit: trajectory.pixelsPerUnit, sensoryVersion: trajectory.version});
   const feedback = trajectory.entries.map(({command}) => run(session.hand, command));
   return {experiment: session.experiment(), feedback};
 }

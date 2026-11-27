@@ -50,7 +50,9 @@ it('does not feel a covered crease or mark, and finds the same material again af
   expect(hand.move(point(.42, .42)).events).toEqual([]);
   expect(hand.move(point(.27, .42))).toMatchObject({contact: 'surface', proximity: 0});
   hand.beginTrace(point(.1, .63));
-  expect(hand.move(point(.3, .63)).events).toEqual([]);
+  const hidden = hand.move(point(.27, .63));
+  expect(hidden.events).toEqual([]);
+  expect(hidden.landmark).toBeUndefined();
   expect(hand.mark().validation?.code).toBe('no-intersection');
 
   expect(hand.flip().validation?.status).toBe('accepted');
@@ -175,4 +177,47 @@ it('replays a bounded tactile log independently of the ordinary marked and folde
   short.hand.move(point(.4, .7));
   expect(short.trajectory()).toMatchObject({truncated: true, entries: [{command: {kind: 'trace'}}]});
   expect(short.experiment()).toBe(initial);
+});
+
+it('feels a corner approaching along an edge even at saturated edge proximity', () => {
+  const initial = createExperiment();
+  const session = createTactileSession(initial);
+  const hand = session.hand;
+  expect(hand.beginTrace(point(.2, .2))).toMatchObject({contact: 'surface', proximity: 0});
+  const samples = [.05, .025, .015, .005, 0].map(x => hand.move(point(x, 0)));
+  expect(samples.map(f => f.contact)).toEqual(['edge', 'edge', 'edge', 'corner', 'corner']);
+  expect(samples.map(f => f.proximity)).toEqual([1, 1, 1, 1, 1]);
+  expect(samples[0].landmark).toBeUndefined();
+  for (const [i, x] of [.025, .015, .005, 0].entries()) {
+    const f = samples[i + 1];
+    expect(f.landmark?.kind).toBe('corner');
+    expect(f.landmark?.intensity).toBeCloseTo(1 - x / .03);
+    expect(f.motor).toEqual(point(x, 0));
+    expect(f.snapped).toBe(false);
+  }
+  expect(session.experiment()).toBe(initial);
+});
+
+it('feels an intersection on approach along a retained crease and a mark at coincidence', () => {
+  const hand = createTactileSession(crossed()).hand;
+  expect(hand.beginTrace(point(.27, .58)).contact).toBe('crease');
+  const near = hand.move(point(.27, .61));
+  expect(near.contact).toBe('crease');
+  expect(near.landmark?.kind).toBe('intersection');
+  expect(near.landmark?.intensity).toBeCloseTo(1 / 3);
+  const at = hand.move(point(.27, .63));
+  expect(at.contact).toBe('intersection');
+  expect(at.landmark?.intensity).toBeCloseTo(1);
+  expect(hand.mark()).toMatchObject({contact: 'mark', landmark: {kind: 'mark'}});
+});
+
+it('feels a displaced flap corner only from its exposed side', () => {
+  const dog = recordMove(createExperiment(), {line: [[.6, 1], [1, .6]], side: 1});
+  expect(dog.attempts[0].validation.status).toBe('accepted');
+  const {hand} = createTactileSession(dog);
+  expect(hand.beginTrace(point(.6, .6))).toMatchObject({contact: 'corner', landmark: {kind: 'corner'}});
+  expect(hand.flip().validation?.status).toBe('accepted');
+  const hidden = hand.beginTrace(point(.4, .6));
+  expect(hidden.contact).toBe('surface');
+  expect(hidden.landmark).toBeUndefined();
 });
