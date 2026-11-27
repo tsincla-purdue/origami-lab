@@ -7,7 +7,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 it('preserves the approved invitation to self-directed play verbatim', () => {
   const invitation = "You have a piece of paper to explore.\n\nPlay with it in whatever way you find interesting or pleasing. Let what you experience suggest a question you would like to investigate, however small. Use your hands to explore that question, paying attention to what actually happens.\n\nFollow surprises, change your question, or pursue something entirely different whenever you wish.\n\nThere is no particular shape to make, no problem to solve, and no result you need to achieve. The exploration itself is the point.";
-  expect(instructions.startsWith(invitation + '\n\nUse one JSON action per reply.')).toBe(true);
+  expect(instructions.startsWith(invitation + '\n\nMeasurement contract\n')).toBe(true);
 });
 
 function mockOllama(...outputs: string[]) {
@@ -51,7 +51,7 @@ describe('bounded tactile exploration', () => {
       '{"action":"move","at":{"x":0,"y":0,"facet":2}}', '{"action":"move","at":{"x":"1","y":0}}',
       '{"action":"flip","at":{"x":0,"y":0}}', '{"action":"flip","packet":[0]}', '{"action":"__proto__"}',
       '{"action":"mark","note":{"kind":"fact","text":"example"}}',
-      JSON.stringify({action: 'unfold', note: {kind: 'observation', text: 'x'.repeat(241)}})];
+      JSON.stringify({action: 'unfold', note: {kind: 'reflection', text: 'x'.repeat(241)}})];
     mockOllama(...bad);
     const initial = recordFlip(createExperiment());
     const r = await runEpisode(ollamaController('mock'), {maxDecisions: bad.length}, initial);
@@ -60,7 +60,7 @@ describe('bounded tactile exploration', () => {
     expect(r.decisions.every(d => d.error && d.motorCount === 0)).toBe(true);
     expect(r.decisions[1].view.correction).toBe(r.decisions[0].error);
     expect(r.experiment).toEqual(initial);
-    expect(r.notebook).toEqual([]);
+    expect(r.inquiryNotebook).toEqual([]);
     expect(r.trajectory.entries).toEqual([]);
   });
 
@@ -83,20 +83,20 @@ describe('bounded tactile exploration', () => {
   });
 
   it('presents detached bounded memory and never corrects a notebook entry using the paper', async () => {
-    const choices = script({action: 'unfold', note: {kind: 'observation', text: 'I felt a tap.'}},
+    const choices = script({action: 'unfold', note: {kind: 'reflection', text: 'I felt a tap.'}},
       {action: 'release', note: {kind: 'conjecture', text: 'Maybe the sheet moved.'}}, {action: 'stop'});
     const r = await runEpisode({...choices, async decide(view, signal) {
-      expect(Object.keys(view).sort()).toEqual(['handMode', 'motor', 'notebook', 'recent']);
+      expect(Object.keys(view).sort()).toEqual(['handMode', 'inquiryNotebook', 'motor', 'nextMotorIndex', 'omittedInquiryNotes', 'recent', 'sensoryMemory']);
       view.motor.x = 99;
-      view.notebook.push({kind: 'observation', text: 'external mutation'});
+      view.inquiryNotebook.push({kind: 'question', text: 'external mutation', beforeMotorIndex: 123});
       view.recent.length = 0;
       return choices.decide(view, signal);
     }}, {recentLimit: 1, notebookLimit: 1});
-    expect(r.decisions[0].view).toEqual({handMode: 'idle', motor: {x: 0, y: 0}, recent: [], notebook: []});
+    expect(r.decisions[0].view).toEqual({handMode: 'idle', motor: {x: 0, y: 0}, recent: [], sensoryMemory: [], inquiryNotebook: [], nextMotorIndex: 0, omittedInquiryNotes: 0});
     expect(r.decisions[1].view.recent[0].sense.outcome).toBe('rejected');
     expect(r.trajectory.entries[0].feedback.validation?.code).toBe('no-active-fold');
     expect(r.decisions[2].view.recent.map(e => e.action.action)).toEqual(['release']);
-    expect(r.notebook).toEqual([{kind: 'conjecture', text: 'Maybe the sheet moved.'}]);
+    expect(r.inquiryNotebook).toEqual([{kind: 'conjecture', text: 'Maybe the sheet moved.', beforeMotorIndex: 1}]);
     expect(r.experiment).toEqual(r.initial);
     expect(r.ending).toBe('agent-stop');
   });
@@ -232,6 +232,23 @@ describe('LM Studio', () => {
     expect(r.decisions[0]).toMatchObject({motorCount: 0, error: expect.any(String)});
     expect(r.trajectory.entries.map(e => e.command.kind)).toEqual(['trace']);
     expect(replayEpisode(r).status).toBe('verified');
+  });
+
+  it('sends identical grounded messages and action schemas to both providers', async () => {
+    const raw = JSON.stringify({action: 'stop', note: {kind: 'question', text: 'What did I feel?'}});
+    const fetch = mockOllama(raw);
+    await runEpisode(ollamaController('mock'));
+    const ollama = JSON.parse(fetch.mock.calls[0][1].body as string);
+    const lm = vi.fn(async (_url: URL, _init: RequestInit) =>
+      Response.json({choices: [{message: {content: raw}, finish_reason: 'stop'}]}));
+    vi.stubGlobal('fetch', lm);
+    await runEpisode(lmstudioController('mock'));
+    const studio = JSON.parse(lm.mock.calls[0][1].body as string);
+    expect(studio.messages).toEqual(ollama.messages);
+    expect(studio.response_format.json_schema.schema).toEqual(ollama.format);
+    expect(ollama.format.oneOf[0].properties.note.properties.kind.enum).toEqual(['question', 'conjecture', 'reflection']);
+    expect(lm).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it.each([[404, 'missing model'], [200, '{'], [200, '{"choices":[]}']])(

@@ -2,6 +2,7 @@ import {
   TACTILE_VERSION, createExperiment, createTactileSession, importExperiment, replayTactileTrajectory, serializeExperiment,
   type Experiment, type TactileCommand, type TactileFeedback, type TactileHand, type TactileTrajectory,
 } from '../lab';
+import {createMemory, memoryPolicy} from './memory';
 import {integer, ProviderError} from './controllers';
 import {observe, parseChoice, type Action, type Choice, type Controller, type Point, type View} from './protocol';
 
@@ -9,7 +10,7 @@ export {lmstudioController, ollamaController, randomController} from './controll
 export {importExperiment, observe, serializeExperiment};
 export const defaults = {
   maxCommands: 100, maxDecisions: 100, durationMs: 600000, timeoutMs: 30000, step: .125,
-  pixelsPerUnit: 400, trajectoryLimit: 2048, recentLimit: 6, notebookLimit: 6,
+  pixelsPerUnit: 400, trajectoryLimit: 2048, recentLimit: 6, notebookLimit: 6, sensoryLimit: 6,
 };
 type Settings = typeof defaults;
 
@@ -20,6 +21,7 @@ function settings(options: Partial<Settings>): Settings {
   integer('durationMs', c.durationMs, 1, 86400000);
   integer('timeoutMs', c.timeoutMs, 1, 600000);
   integer('trajectoryLimit', c.trajectoryLimit, 0, 2048);
+  integer('sensoryLimit', c.sensoryLimit, 1, 16);
   integer('recentLimit', c.recentLimit, 1, 16);
   integer('notebookLimit', c.notebookLimit, 0, 16);
   integer('pixelsPerUnit', c.pixelsPerUnit, 32, 4096);
@@ -56,8 +58,13 @@ function asAction(c: TactileCommand): Action {
   return {action: c.kind};
 }
 
+function formatError(err: unknown) {
+  return err instanceof SyntaxError ? 'Expected one JSON object.' : (err as Error).message;
+}
+
 type Entry = TactileTrajectory['entries'][number];
 type Decision = {
+  inquiry?: View['inquiryNotebook'][number];
   view: View; raw?: string; generatedTokens?: number; choice?: Choice; error?: string;
   responseMetadata?: Record<string, unknown>;
   providerResponse?: {body: string; truncated: boolean};
@@ -65,9 +72,9 @@ type Decision = {
 };
 type Ending = 'motor-limit' | 'decision-limit' | 'duration' | 'model-timeout' | 'provider-error' | 'host-stop' | 'agent-stop';
 export interface Episode {
-  version: 1; started: string; elapsedMs: number; controller: Controller['metadata']; settings: Settings;
+  version: 2; memoryPolicy: typeof memoryPolicy; started: string; elapsedMs: number; controller: Controller['metadata']; settings: Settings;
   initial: Experiment; decisions: Decision[]; trajectory: TactileTrajectory; overflow: Entry[];
-  ending: Ending; notebook: View['notebook']; experiment: Experiment;
+  ending: Ending; inquiryNotebook: View['inquiryNotebook']; sensoryMemory: View['sensoryMemory']; experiment: Experiment;
 }
 
 export async function runEpisode(controller: Controller, options: Partial<Settings> = {},
@@ -80,7 +87,8 @@ export async function runEpisode(controller: Controller, options: Partial<Settin
   const start = performance.now(), deadline = start + config.durationMs;
   const duration = AbortSignal.timeout(config.durationMs);
   const decisions: Decision[] = [], log: Entry[] = [];
-  const memory: View = {handMode: 'idle', motor: {x: 0, y: 0}, recent: [], notebook: []};
+  const memory = createMemory(config);
+  let correction: string | undefined;
   function hostLimit(): Ending | undefined {
     if (signal?.aborted) return 'host-stop';
     if (performance.now() >= deadline || duration.aborted) return 'duration';
@@ -90,7 +98,7 @@ export async function runEpisode(controller: Controller, options: Partial<Settin
   let ending: Ending | undefined;
   while (!(ending = hostLimit())) {
     if (decisions.length >= config.maxDecisions) { ending = 'decision-limit'; break; }
-    const decision: Decision = {view: structuredClone(memory), motorStart: log.length, motorCount: 0};
+    const decision: Decision = {view: memory.view(correction), motorStart: log.length, motorCount: 0};
     decisions.push(decision);
     const requestDeadline = performance.now() + config.timeoutMs;
     const timeout = AbortSignal.timeout(config.timeoutMs);
@@ -122,36 +130,26 @@ export async function runEpisode(controller: Controller, options: Partial<Settin
     try {
       decision.choice = parseChoice(decision.raw);
     } catch (err) {
-      decision.error = err instanceof SyntaxError ? 'Expected one JSON object.' : (err as Error).message;
-      memory.correction = decision.error;
+      decision.error = formatError(err);
+      correction = decision.error;
       continue;
     }
-    delete memory.correction;
+    correction = undefined;
     const choice = decision.choice;
-    if (choice.note) {
-      memory.notebook.push(choice.note);
-      if (memory.notebook.length > config.notebookLimit) memory.notebook.shift();
-    }
+    if (choice.note) decision.inquiry = memory.inquire(choice.note);
     if (choice.action === 'stop') { ending = 'agent-stop'; break; }
     for (const command of path(choice, memory.motor, step)) {
       if (hostLimit()) break;
       const feedback = execute(session.hand, command);
       log.push({command, feedback});
       decision.motorCount++;
-      switch (command.kind) {
-        case 'trace': memory.handMode = 'tracing'; break;
-        case 'drag': memory.handMode = feedback.validation?.status === 'rejected' ? 'idle' : 'dragging'; break;
-        case 'release': case 'flip': case 'unfold': memory.handMode = 'idle'; break;
-      }
-      memory.motor = feedback.motor;
-      memory.recent.push({action: asAction(command), sense: observe(feedback, command)});
-      if (memory.recent.length > config.recentLimit) memory.recent.shift();
+      memory.record(asAction(command), observe(feedback, command));
     }
   }
   const trajectory = session.trajectory() ?? {version: TACTILE_VERSION, pixelsPerUnit: config.pixelsPerUnit, entries: [], truncated: log.length > 0};
-  return {version: 1, started, elapsedMs: Math.round(performance.now() - start), controller: controller.metadata,
+  return {version: 2, memoryPolicy: structuredClone(memoryPolicy), started, elapsedMs: Math.round(performance.now() - start), controller: controller.metadata,
     settings: config, initial, decisions, trajectory, overflow: log.slice(trajectory.entries.length),
-    ending, notebook: memory.notebook, experiment: session.experiment()};
+    ending, inquiryNotebook: memory.inquiryNotebook, sensoryMemory: memory.sensoryMemory, experiment: session.experiment()};
 }
 
 // JSON object key order can change when a saved record passes through another tool.
@@ -162,8 +160,12 @@ function sortedJSON(value: unknown): string {
   });
 }
 
-export function replayEpisode(record: Episode) {
-  if (record.version !== 1) throw new Error('Unsupported Clydie episode version.');
+type HistoricalEpisode = Pick<Episode, 'initial' | 'experiment' | 'trajectory' | 'overflow'> & {
+  version: 1; settings: Omit<Settings, 'sensoryLimit'>; decisions: Pick<Decision, 'motorStart' | 'motorCount'>[];
+};
+
+export function replayEpisode(record: Episode | HistoricalEpisode) {
+  if (record.version !== 1 && record.version !== 2) throw new Error('Unsupported Clydie episode version.');
   const initial = importExperiment(JSON.stringify(record.initial));
   const {trajectory} = record;
   if (trajectory.truncated || record.overflow.length) return {status: 'incomplete' as const};
@@ -195,6 +197,37 @@ export function replayEpisode(record: Episode) {
   if (sortedJSON(result.feedback) !== sortedJSON(trajectory.entries.map(entry => entry.feedback)) ||
       sortedJSON(result.experiment) !== sortedJSON(record.experiment)) {
     throw new Error('Replay disagrees with recorded feedback or canonical experiment.');
+  }
+  if (record.version === 2) {
+    const memory = createMemory(config);
+    let correction: string | undefined;
+    if (sortedJSON(record.memoryPolicy) !== sortedJSON(memoryPolicy)) throw new Error('Unknown sensory memory policy.');
+    for (const d of record.decisions) {
+      if (sortedJSON(d.view) !== sortedJSON(memory.view(correction))) throw new Error('Replay disagrees with recorded controller view.');
+      if (d.choice) {
+        const parsed = parseChoice(d.raw ?? '');
+        if (sortedJSON(parsed) !== sortedJSON(d.choice)) throw new Error('Replay disagrees with recorded choice.');
+        const inquiry = parsed.note ? memory.inquire(parsed.note) : undefined;
+        if (sortedJSON(inquiry) !== sortedJSON(d.inquiry)) throw new Error('Replay disagrees with time-stamped inquiry.');
+        correction = undefined;
+      } else {
+        if (d.motorCount || d.inquiry) throw new Error('Invalid decision issued motor commands or inquiry.');
+        // Only format failures can lead to another request. Transport and deadline errors end the run.
+        if (d !== record.decisions.at(-1)) {
+          if (d.raw === undefined) throw new Error('Missing model reply before correction.');
+          let error: string | undefined;
+          try { parseChoice(d.raw); } catch (err) { error = formatError(err); }
+          if (!error || error !== d.error) throw new Error('Replay disagrees with format correction.');
+          correction = error;
+        }
+      }
+      for (let i = d.motorStart; i < d.motorStart + d.motorCount; i++) {
+        const command = trajectory.entries[i].command;
+        memory.record(asAction(command), observe(result.feedback[i], command));
+      }
+    }
+    if (sortedJSON(record.sensoryMemory) !== sortedJSON(memory.sensoryMemory) ||
+        sortedJSON(record.inquiryNotebook) !== sortedJSON(memory.inquiryNotebook)) throw new Error('Replay disagrees with final memory.');
   }
   return {status: 'verified' as const};
 }
