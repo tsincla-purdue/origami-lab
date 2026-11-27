@@ -2,7 +2,7 @@ import {mkdir, mkdtemp, readFile, writeFile} from 'node:fs/promises';
 import {resolve, join} from 'node:path';
 import {parseArgs} from 'node:util';
 import {gunzipSync} from 'node:zlib';
-import {defaults, importExperiment, ollamaController, randomController, replayEpisode, runEpisode,
+import {defaults, lmstudioController, importExperiment, ollamaController, randomController, replayEpisode, runEpisode,
   serializeExperiment, summarize} from '../.clydie-build/episode.js';
 
 const options = Object.fromEntries([
@@ -38,6 +38,7 @@ function inspect(record) {
 async function main() {
   if (values.help) {
     console.log('npm run clydie -- --controller ollama --model TAG [--seed N] [--output DIR]');
+    console.log('npm run clydie -- --controller lmstudio --model ID [--endpoint URL]');
     console.log('npm run clydie -- --controller random [--seed N] [--max-commands N]');
     console.log('npm run clydie -- inspect FILE | replay FILE [--export NEW_FILE]');
     console.log('All controls and defaults are documented in docs/CLYDIE.md.');
@@ -57,11 +58,18 @@ async function main() {
   if (mode !== 'run' || path) throw new Error('Use run, inspect FILE, or replay FILE.');
   const seed = number('seed', 1);
   const type = values.controller ?? 'ollama';
-  if (!['ollama','random'].includes(type)) throw new Error('Choose ollama or random.');
-  const controller = type === 'random' ? randomController(seed) : ollamaController(values.model ?? '', {
-    endpoint: values.endpoint, seed, temperature: number('temperature', .7), topP: number('top-p', .9),
-    tokens: number('tokens', 128), context: number('context', 4096),
-  });
+  const options = {endpoint: values.endpoint, seed, temperature: number('temperature', .7),
+    topP: number('top-p', .9), tokens: number('tokens', 128)};
+  let controller;
+  switch (type) {
+    case 'random': controller = randomController(seed); break;
+    case 'ollama': controller = ollamaController(values.model ?? '', {...options, context: number('context', 4096)}); break;
+    case 'lmstudio':
+      if (values.context !== undefined) throw new Error('Set the context window when loading the model in LM Studio.');
+      controller = lmstudioController(values.model ?? '', options);
+      break;
+    default: throw new Error('Choose ollama, lmstudio or random.');
+  }
   const config = Object.fromEntries(Object.entries(defaults).map(([key, value]) =>
     [key, number(key.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase()), value)]));
   const initial = values.initial ? importExperiment(await readFile(values.initial, 'utf8')) : undefined;

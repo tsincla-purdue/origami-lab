@@ -1,6 +1,6 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {createExperiment, recordFlip, type TactileFeedback} from '../src/lab';
-import {importExperiment, serializeExperiment, ollamaController, randomController, replayEpisode, runEpisode, summarize} from '../src/clydie/episode';
+import {importExperiment, serializeExperiment, lmstudioController, ollamaController, randomController, replayEpisode, runEpisode, summarize} from '../src/clydie/episode';
 import {actions, format, instructions, observe, parseChoice, type Controller} from '../src/clydie/protocol';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -81,13 +81,13 @@ describe('bounded tactile exploration', () => {
     const choices = script({action: 'unfold', note: {kind: 'observation', text: 'I felt a tap.'}},
       {action: 'release', note: {kind: 'conjecture', text: 'Maybe the sheet moved.'}}, {action: 'stop'});
     const r = await runEpisode({...choices, async decide(view, signal) {
-      expect(Object.keys(view).sort()).toEqual(['motor', 'notebook', 'recent']);
+      expect(Object.keys(view).sort()).toEqual(['handMode', 'motor', 'notebook', 'recent']);
       view.motor.x = 99;
       view.notebook.push({kind: 'observation', text: 'external mutation'});
       view.recent.length = 0;
       return choices.decide(view, signal);
     }}, {recentLimit: 1, notebookLimit: 1});
-    expect(r.decisions[0].view).toEqual({motor: {x: 0, y: 0}, recent: [], notebook: []});
+    expect(r.decisions[0].view).toEqual({handMode: 'idle', motor: {x: 0, y: 0}, recent: [], notebook: []});
     expect(r.decisions[1].view.recent[0].sense.outcome).toBe('rejected');
     expect(r.trajectory.entries[0].feedback.validation?.code).toBe('no-active-fold');
     expect(r.decisions[2].view.recent.map(e => e.action.action)).toEqual(['release']);
@@ -195,4 +195,58 @@ describe('bounded tactile exploration', () => {
       expect(r.decisions[0].providerResponse).toEqual({body: body.slice(0, 65536), truncated: body.length > 65536});
       expect(r.experiment).toEqual(r.initial);
     });
+});
+
+describe('LM Studio', () => {
+  it('sends the shared schema and detached view, and records completions before action validation', async () => {
+    const model = 'local-model';
+    const outputs = [{action: 'beginDrag'}, {action: 'beginTrace', at: {x: .5, y: .5}}, {action: 'stop'}];
+    const usage = {prompt_tokens: 50, completion_tokens: 10, total_tokens: 60};
+    const fetch = vi.fn(async (_url: URL, _init: RequestInit) => Response.json({
+      id: 'completion-id', model: 'loaded-model', usage,
+      choices: [{finish_reason: 'stop', message: {role: 'assistant', content: JSON.stringify(outputs.shift())}}],
+    }));
+    vi.stubGlobal('fetch', fetch);
+    const options = {temperature: .2, top_p: .8, seed: 23, max_tokens: 64};
+    const response_format = {type: 'json_schema', json_schema: {name: 'clydie_action', strict: true, schema: format}};
+    const controller = lmstudioController(model, {temperature: .2, topP: .8, seed: 23, tokens: 64});
+    const r = await runEpisode(controller);
+    expect(r.controller).toMatchObject({type: 'lmstudio', model, options, response_format});
+    for (const [i, [url, init]] of fetch.mock.calls.entries()) {
+      expect(url.href).toBe('http://127.0.0.1:1234/v1/chat/completions');
+      expect(init).toMatchObject({method: 'POST', redirect: 'error'});
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      expect(JSON.parse(init.body as string)).toEqual({model, stream: false, ...options, response_format, messages: [
+        {role: 'system', content: instructions}, {role: 'user', content: JSON.stringify(r.decisions[i].view)},
+      ]});
+      expect(r.decisions[i]).toMatchObject({generatedTokens: 10,
+        responseMetadata: {id: 'completion-id', model: 'loaded-model', finishReason: 'stop', usage}});
+    }
+    expect(r.ending).toBe('agent-stop');
+    expect(r.decisions[0]).toMatchObject({motorCount: 0, error: expect.any(String)});
+    expect(r.trajectory.entries.map(e => e.command.kind)).toEqual(['trace']);
+    expect(replayEpisode(r).status).toBe('verified');
+  });
+
+  it.each([[404, 'missing model'], [200, '{'], [200, '{"choices":[]}']])(
+    'records an unusable provider reply without executing a command', async (status, body) => {
+      vi.stubGlobal('fetch', () => new Response(String(body), {status: Number(status)}));
+      const r = await runEpisode(lmstudioController('test', {endpoint: 'http://localhost:9000/test/v1/'}));
+      expect(r.controller.url).toBe('http://localhost:9000/test/v1/chat/completions');
+      expect(r.ending).toBe('provider-error');
+      expect(r.decisions[0]).toMatchObject({motorCount: 0, providerResponse: {body, truncated: false}});
+    });
+});
+
+it('reports hand mode from issued commands and grab feedback', async () => {
+  const corner = {x: 1, y: 0};
+  const r = await runEpisode(script({action: 'beginTrace', at: corner}, {action: 'mark'},
+    {action: 'move', at: corner}, {action: 'beginDrag', at: {x: -1, y: -1}},
+    {action: 'beginDrag', at: corner}, {action: 'move', at: corner}, {action: 'release'},
+    {action: 'beginTrace', at: corner}, {action: 'unfold'}, {action: 'beginDrag', at: corner},
+    {action: 'flip'}, {action: 'stop'}));
+  expect(r.decisions.map(d => d.view.handMode)).toEqual([
+    'idle', 'tracing', 'tracing', 'tracing', 'idle', 'dragging', 'dragging',
+    'idle', 'tracing', 'idle', 'dragging', 'idle',
+  ]);
 });
