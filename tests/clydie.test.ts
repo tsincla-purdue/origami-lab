@@ -5,10 +5,9 @@ import {actions, format, instructions, observe, parseChoice, type Controller} fr
 
 afterEach(() => vi.unstubAllGlobals());
 
-it('invites Clydie to play and pursue its own question without a target', () => {
-  expect(instructions).toContain('Fully engage with the paper in a way you find pleasing.');
-  expect(instructions).toContain('Find a guiding question of your own and explore it.');
-  expect(instructions).toContain('There is no particular shape you need to make or outcome you need to reach.');
+it('preserves the approved invitation to self-directed play verbatim', () => {
+  const invitation = "You have a piece of paper to explore.\n\nPlay with it in whatever way you find interesting or pleasing. Let what you experience suggest a question you would like to investigate, however small. Use your hands to explore that question, paying attention to what actually happens.\n\nFollow surprises, change your question, or pursue something entirely different whenever you wish.\n\nThere is no particular shape to make, no problem to solve, and no result you need to achieve. The exploration itself is the point.";
+  expect(instructions.startsWith(invitation + '\n\nUse one JSON action per reply.')).toBe(true);
 });
 
 function mockOllama(...outputs: string[]) {
