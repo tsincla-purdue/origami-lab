@@ -8,7 +8,7 @@ import {defaults, observe, lmstudioController, importExperiment, ollamaControlle
 const options = Object.fromEntries([
   'controller', 'model', 'endpoint', 'seed', 'temperature', 'top-p', 'tokens', 'context',
   'max-commands', 'max-decisions', 'duration-ms', 'timeout-ms', 'step', 'pixels-per-unit',
-  'trajectory-limit', 'recent-limit', 'notebook-limit', 'initial', 'output', 'export',
+  'trajectory-limit', 'sensory-limit', 'recent-limit', 'notebook-limit', 'initial', 'output', 'export',
 ].map(key => [key, {type: 'string'}]));
 options.help = {type: 'boolean'};
 const {values, positionals} = parseArgs({options, allowPositionals: true});
@@ -23,17 +23,28 @@ function inspect(record) {
   console.log('Controller', record.controller.type, record.controller.model ?? record.controller.policy, 'seed', record.controller.seed ?? record.controller.options?.seed);
   console.log('Tactile trajectory', record.trajectory.truncated ? 'incomplete' : 'complete');
   for (const [i, d] of record.decisions.entries()) {
-    console.log(`\nDecision ${i + 1}  ${d.raw ?? '(no reply)'}`);
+    console.log(`\nDecision ${i + 1} before motor ${d.motorStart}`);
+    if (record.version === 2) {
+      console.log('Observed (host), before choice', JSON.stringify(d.view.sensoryMemory));
+      console.log('Recent executed steps and deltas', JSON.stringify(d.view.recent));
+      console.log('Inquiry (model), visible before choice', JSON.stringify(d.view.inquiryNotebook));
+    }
+    console.log('Controller reply', d.raw ?? '(no reply)');
+    if (d.choice?.note) console.log('Inquiry (model), before motor', d.motorStart, d.choice.note);
     if (d.error) console.log('  Error', d.error);
-    for (const {command, feedback} of motors.slice(d.motorStart, d.motorStart + d.motorCount)) {
+    for (let index = d.motorStart; index < d.motorStart + d.motorCount; index++) {
+      const {command, feedback} = motors[index];
       const felt = record.trajectory.version === 1 ? feedback.events : observe(feedback, command).events;
       const events = felt.map(e => [e.kind, e.contact ?? e.constraint].filter(Boolean).join(' '));
-      console.log(' ', command.kind, JSON.stringify(feedback.motor), feedback.contact ?? '', 'proximity', feedback.proximity.toFixed(2),
+      console.log('  Observed (host), motor', index, command.kind, JSON.stringify(feedback.motor), feedback.contact ?? '', 'proximity', feedback.proximity.toFixed(2),
         feedback.landmark ? `${feedback.landmark.kind} intensity ${feedback.landmark.intensity.toFixed(2)}` : '',
-        feedback.snapped ? 'snapped' : '', ...events, feedback.validation?.status ?? '', feedback.validation?.reason ?? '');
+        feedback.snapped ? 'snapped' : '', ...events, feedback.validation?.status ?? '');
+      if (feedback.validation) console.log('  Host diagnostic', feedback.validation.code, feedback.validation.reason);
     }
   }
-  console.log('\nFinal notebook', record.notebook);
+  if (record.version === 2) console.log('\nFinal observed (host)', record.sensoryMemory);
+  console.log(record.version === 1 ? 'Legacy notebook (model-authored)' : 'Final inquiry (model)',
+    record.version === 1 ? record.notebook : record.inquiryNotebook);
   console.log(JSON.stringify(summarize(record), null, 2));
 }
 

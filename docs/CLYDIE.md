@@ -1,4 +1,4 @@
-# Clydie v0.2
+# Clydie v0.3
 
 Clydie explores one sheet through the same tactile hand as the playground. A local instruction model chooses one action at a time. A small host moves the hand, keeps the experiment and records what happened. A seeded random controller can take the model's place in the same loop. Neither controller has a construction objective. [First three episodes and their records](verification/clydie-v0/README.md)
 
@@ -40,7 +40,7 @@ npm run clydie -- replay docs/verification/clydie-v0/b.json.gz --export baseline
 npm run dev
 ```
 
-**Inspect** shows the exact proposed action and note, any error, each motor position and its sensations, validation reasons, the final notebook and counts. The full JSON also includes the precise view before each decision. A note belongs to the decision that proposed the action, so it can only refer to experience available earlier.
+**Inspect** shows the exact proposed action and note, any error, each motor position and its sensations, validation reasons, the final notebook and counts. The full JSON also includes the precise view before each decision. A note belongs to the decision that proposed the action, and its provenance ends at the preceding motor command. The model can still write unsupported claims.
 
 **Replay** applies the recorded inputs to a fresh tactile session from the saved starting experiment. It checks the feedback and canonical experiment against the record using `replayTactileTrajectory`. The model takes no part in replay. A repeated live inference run can make different choices even with the same seed.
 
@@ -58,20 +58,25 @@ npm run dev
 | `--max-commands`, `--max-decisions` | 100, 100 | Independent limits, each 1–2048. Invalid replies consume a decision. Interpolated movements each consume one motor command. |
 | `--duration-ms`, `--timeout-ms` | 600000, 30000 | Wall-clock limits for the episode and each model request, including model loading. |
 | `--step`, `--pixels-per-unit` | 0.125, 400 | Maximum length per interpolated move (0.01–1 sheet units) and virtual scale (32–4096 pixels per unit). |
-| `--recent-limit`, `--notebook-limit` | 6, 6 | Most recent motor/observation pairs (1–16) and model-written notes (0–16) retained in the next view. |
+| `--recent-limit`, `--notebook-limit` | 6, 6 | Most recent executed motor steps (1–16) and model-written inquiry notes (0–16) retained in the next view. |
+| `--sensory-limit` | 6 | Consecutive sensory reading ranges retained by the host (1–16). |
 | `--trajectory-limit` | 2048 | Native tactile recorder's command capacity, 0–2048. Its independent 4096-event cap also applies. |
 
 A model can choose `stop`. The host can stop on a command or decision limit, elapsed time, provider failure, or Ctrl-C. The record distinguishes these endings. A malformed action is saved verbatim and followed by a short format correction on the next budgeted decision. A transport failure or timeout ends the episode immediately. A malformed provider envelope is kept up to 64 KiB with an explicit truncation flag for larger replies.
 
 ## What the controller can experience
 
-The provider sends two messages per request. The fixed system message invites Clydie to play with the paper, let what it experiences suggest a question (however small), pursue that question through its hands, and follow surprises or change direction freely. The exploration itself is the point; there is no prescribed shape, problem or outcome. It also supplies the action vocabulary, coordinate conventions and meanings of sensations. The user message contains only the hand’s motor position and current mode (`handMode` is `idle`, `tracing` or `dragging`), recent motor actions and observations, notebook and any format correction. The system message and JSON schema are saved verbatim in model records. The controller receives detached data. The isolated model service has no handle to the session or host tools. A custom JavaScript controller, like other code running in the Node process, is trusted code. [Protocol and prompt](../src/clydie/protocol.ts)
+The provider sends two messages per request. The fixed system message invites Clydie to play with the paper, let what it experiences suggest a question (however small), pursue that question through its hands, and follow surprises or change direction freely. The exploration itself is the point; there is no prescribed shape, problem or outcome. It also supplies the action vocabulary, coordinate conventions and meanings of sensations. The user message contains only the hand’s motor position and current mode (`handMode` is `idle`, `tracing` or `dragging`), recent executed actions with projected feedback and literal deltas, host sensory memory, model inquiry notes, a motor index and any format correction. The system message and JSON schema are saved verbatim in model records. The controller receives detached data. The isolated model service has no handle to the session or host tools. A custom JavaScript controller, like other code running in the Node process, is trusted code. [Protocol and prompt](../src/clydie/protocol.ts)
 
 - `beginDrag` and `beginTrace` place the hand directly. `move` follows a straight line in equal steps from the current motor position. Each requires `at` with finite numeric `x` and `y` in [−1, 2]. The original sheet spans [0, 1] on each axis, with y increasing upwards.
 - `release`, `mark`, `flip` and `unfold` issue the corresponding hand command. They take no coordinates. `stop` ends deliberation without touching the paper. The host validates the whole reply before execution.
 - Each executed command contributes a position, proximity, contact class, snap state and validation status when present. The view retains up to the last eight events per command and reports how many were omitted. Contact class, snap constraint class and resistance status are the only event details passed through. Event coordinates, hidden target coordinates, identities, shapes and diagnostic reasons stay with the host. Vision is absent.
 - Movement interpolation uses only the starting motor position and requested destination. It follows the path until completion or a host limit. The underlying tactile hand handles surface sampling, snapping, gesture interpretation and validation.
-- An optional note has a `kind` of `observation` or `conjecture` and up to 240 characters of `text`. The controller chooses both. Old notes drop out of working memory in insertion order. They remain in the episode record. The host never grades notes or supplies discoveries.
+- An optional note has a `kind` of `question`, `conjecture` or `reflection` and up to 240 characters of free text. The host stamps it with `beforeMotorIndex` when the choice passes validation. At index 4, only motors 0–3 have executed. A proposed move may then issue several commands before the next view. A rejected reply executes nothing and adds no note.
+- Each recent step includes its zero-based motor index. The delta compares contact, proximity, landmark, snap state, validation outcome and omitted-event count with the preceding step, including one that has since fallen out of the window. Changed fields have their old and new values. `eventsChanged` compares the ordered safe event lists. The list itself is stored once in `sense.events`. `firstReading` identifies a sample with no predecessor. `noReportedChange` requires equal sensor fields and event sequences, with no current or omitted event. Motor positions are available separately.
+- Host `sensoryMemory` coalesces consecutive identical projected readings, excluding motor position, into inclusive `firstMotorIndex`–`lastMotorIndex` ranges. Event order, repeated events and omitted-event counts take part in equality. A repeated event in a range was reported once per matching command. The full trajectory preserves each position and native event. Only model-authored text enters `inquiryNotebook`. The host never grades it.
+
+Each working window evicts its oldest entry at its configured limit. The serialized controller view has a second UTF-8 byte budget, recorded in `memoryPolicy`. It drops whole entries, choosing the oldest source index among windows with multiple entries (the last index of a sensory range). Ties drop sensory ranges first, then recent steps, then notes. If singleton entries still exceed the budget, the range and then the note can drop. The latest executed step is always retained. `nextMotorIndex` and the first retained indices identify omitted motor history. `omittedInquiryNotes` counts notes outside the view. Final memories in the saved episode use the count limits.
 
 While tracing, `move` samples the path to the next position. Repeating
 `beginTrace` at the same position consumes a motor command and reports the
@@ -99,15 +104,18 @@ The random baseline samples positions uniformly from the original unit square. A
 
 | Field | Contents |
 | --- | --- |
-| `version`, `controller`, `settings`, `started`, `elapsedMs` | Version 1 of the Clydie v0 harness protocol, controller and seed, model tag, prompt, schema and generation options where applicable, all limits and timing. |
+| `version`, `controller`, `settings`, `started`, `elapsedMs` | Version 2 of the Clydie-facing episode protocol, controller and seed, model tag, prompt, schema and generation options where applicable, all limits and timing. |
 | `initial`, `experiment` | Full starting and final canonical experiments, including the Origamio revision and numerical policy. |
 | `decisions[]` | Exact presented view, raw model content when available, generated token count when reported, validated choice or diagnostic, and a zero-based `motorStart` and `motorCount`. |
 | `trajectory`, `overflow` | The native tactile log plus any subsequent host diagnostic entries. Each pairs a motor command with its complete feedback. Decision ranges index the concatenation. |
-| `notebook`, `ending`, `summary` | Final bounded notebook, reason for stopping and post-episode measures. |
+| `sensoryMemory`, `inquiryNotebook`, `memoryPolicy` | Final host readings, separate time-stamped model notes, and versioned retention rules. |
+| `ending`, `summary` | Reason for stopping and post-episode measures. |
 
 A budget can end a planned move partway through. The requested endpoint stays in the decision. Only issued motor commands enter the log. A full or disabled recorder with missing motor entries produces an explicitly incomplete trajectory. The diagnostic overflow preserves what the host experienced. The replay command reports `incomplete` and exits unsuccessfully in that case.
 
-LM Studio records the requested model, generation parameters and exact response format under `controller`. Each decision with returned message content also keeps the reported completion ID, served model, finish reason and token usage in `responseMetadata` when supplied. These fields stay in the host record. Older episodes retain their original views and replay as before.
+LM Studio records the requested model, generation parameters and exact response format under `controller`. Each decision with returned message content also keeps the reported completion ID, served model, finish reason and token usage in `responseMetadata` when supplied. These fields stay in the host record. Version 2 replay also reconstructs every presented view and both final memories from the verified motor trace and the recorded decisions. Version 1 retains its original replay and its `notebook`. Inspection labels historical notes, including notes called `observation`, as model-authored text. The native tactile version and canonical experiment format keep their independent versions.
+
+For the matched Qwen experiment and prompt-size measurements, see the [grounded sensing implementation note](verification/clydie-grounding.md).
 
 The summary counts contact acquisitions, snap acquisitions, resistance events and validation statuses per motor command. A draft movement can encounter resistance without committing an operation. The separate canonical history shows which operations entered the sheet's history. The runner computes these measures after the episode and never sends them to the controller.
 

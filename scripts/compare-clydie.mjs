@@ -61,7 +61,13 @@ const controller = live ? lmstudioController(model, {endpoint: process.env.CLYDI
   temperature: options.temperature, topP: options.top_p, tokens: options.max_tokens}) : {
   metadata: {type: 'fixed-choices', sourceModel: model, sourceStarted: baseline.started},
   async decide() {
-    const raw = baseline.decisions[i++]?.raw;
+    const decision = baseline.decisions[i++];
+    // Retain v1 motor choices without attributing historical notes to the v2 inquiry channel.
+    if (baseline.version === 1 && decision?.choice?.note) {
+      const {note, ...action} = decision.choice;
+      return {raw: JSON.stringify(action)};
+    }
+    const raw = decision?.raw;
     if (raw === undefined) throw new Error('Historical decision stream exhausted.');
     return {raw};
   },
