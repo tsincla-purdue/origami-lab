@@ -49,6 +49,31 @@ it('separates pre-action inquiry from later interpolated readings and verifies s
   }
 });
 
+it('rejects a substituted choice even when its raw reply and motor count agree', async () => {
+  const r = await runEpisode(scripted({action: 'beginTrace', at: {x: .5, y: .5}}, {action: 'stop'}));
+  expect(replayEpisode(r).status).toBe('verified');
+  r.decisions[0].choice = {action: 'flip'};
+  r.decisions[0].raw = JSON.stringify(r.decisions[0].choice);
+  expect(() => replayEpisode(r)).toThrow(/motor path/);
+});
+
+it('accepts a partial motor path only when the final decision can be interrupted', async () => {
+  const r = await runEpisode(scripted({action: 'beginTrace', at: {x: .5, y: .5}},
+    {action: 'move', at: {x: .75, y: .5}}), {step: .125, maxCommands: 2});
+  expect(r.decisions[1].motorCount).toBe(1);
+  expect(replayEpisode(r).status).toBe('verified');
+  r.settings.maxCommands++;
+  expect(() => replayEpisode(r)).toThrow(/motor path/);
+  for (const ending of ['host-stop', 'duration'] as const) {
+    expect(replayEpisode({...r, ending}).status).toBe('verified');
+  }
+  const continued = await runEpisode(scripted({action: 'beginTrace', at: {x: .5, y: .5}},
+    {action: 'move', at: {x: .625, y: .5}}, {action: 'stop'}), {step: .125});
+  continued.decisions[1].choice = r.decisions[1].choice;
+  continued.decisions[1].raw = r.decisions[1].raw;
+  expect(() => replayEpisode(continued)).toThrow(/motor path/);
+});
+
 it('keeps intermediate path events when endpoints match, distinct from lift and reposition', async () => {
   const initial = recordUnfold(recordMove(createExperiment(), {line: [[.5, 0], [.5, 1]], side: -1}));
   const left = {x: .3, y: 0}, right = {x: .7, y: 0};

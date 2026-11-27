@@ -29,12 +29,14 @@ function settings(options: Partial<Settings>): Settings {
   return c;
 }
 
-function* path(choice: Choice, start: Point, step: number): Generator<TactileCommand> {
+function* path(choice: Choice, start: Point, config: Settings): Generator<TactileCommand> {
   switch (choice.action) {
     case 'stop': return;
     case 'beginTrace': yield {kind: 'trace', at: choice.at}; return;
     case 'beginDrag': yield {kind: 'drag', at: choice.at}; return;
     case 'move': {
+      // Allow for interpolation roundoff at the native 4096-pixel movement boundary.
+      const step = Math.min(config.step, (4096 - 1e-9) / config.pixelsPerUnit);
       const dx = choice.at.x - start.x, dy = choice.at.y - start.y;
       const count = Math.max(1, Math.ceil(Math.hypot(dx, dy) / step));
       for (let i = 1; i <= count; i++) {
@@ -81,8 +83,6 @@ export async function runEpisode(controller: Controller, options: Partial<Settin
   initial = createExperiment(), signal?: AbortSignal): Promise<Episode> {
   const config = settings(options);
   const session = createTactileSession(initial, config);
-  // Allow for interpolation roundoff at the native 4096-pixel movement boundary.
-  const step = Math.min(config.step, (4096 - 1e-9) / config.pixelsPerUnit);
   const started = new Date().toISOString();
   const start = performance.now(), deadline = start + config.durationMs;
   const duration = AbortSignal.timeout(config.durationMs);
@@ -138,7 +138,7 @@ export async function runEpisode(controller: Controller, options: Partial<Settin
     const choice = decision.choice;
     if (choice.note) decision.inquiry = memory.inquire(choice.note);
     if (choice.action === 'stop') { ending = 'agent-stop'; break; }
-    for (const command of path(choice, memory.motor, step)) {
+    for (const command of path(choice, memory.motor, config)) {
       if (hostLimit()) break;
       const feedback = execute(session.hand, command);
       log.push({command, feedback});
@@ -202,6 +202,8 @@ export function replayEpisode(record: Episode | HistoricalEpisode) {
     const memory = createMemory(config);
     let correction: string | undefined;
     if (sortedJSON(record.memoryPolicy) !== sortedJSON(memoryPolicy)) throw new Error('Unknown sensory memory policy.');
+    const interrupted = record.ending === 'duration' || record.ending === 'host-stop' ||
+      (record.ending === 'motor-limit' && trajectory.entries.length === config.maxCommands);
     for (const d of record.decisions) {
       if (sortedJSON(d.view) !== sortedJSON(memory.view(correction))) throw new Error('Replay disagrees with recorded controller view.');
       if (d.choice) {
@@ -209,6 +211,18 @@ export function replayEpisode(record: Episode | HistoricalEpisode) {
         if (sortedJSON(parsed) !== sortedJSON(d.choice)) throw new Error('Replay disagrees with recorded choice.');
         const inquiry = parsed.note ? memory.inquire(parsed.note) : undefined;
         if (sortedJSON(inquiry) !== sortedJSON(d.inquiry)) throw new Error('Replay disagrees with time-stamped inquiry.');
+        const expected = path(parsed, memory.motor, config);
+        for (let i = d.motorStart; i < d.motorStart + d.motorCount; i++) {
+          const command = trajectory.entries[i].command;
+          const next = expected.next();
+          if (next.done || sortedJSON(next.value) !== sortedJSON(command)) {
+            throw new Error(`Recorded command at motor index ${i} disagrees with the choice's motor path.`);
+          }
+          memory.record(asAction(command), observe(result.feedback[i], command));
+        }
+        if (!expected.next().done && !(interrupted && d === record.decisions.at(-1))) {
+          throw new Error('Recorded decision ends before its motor path is complete.');
+        }
         correction = undefined;
       } else {
         if (d.motorCount || d.inquiry) throw new Error('Invalid decision issued motor commands or inquiry.');
@@ -220,10 +234,6 @@ export function replayEpisode(record: Episode | HistoricalEpisode) {
           if (!error || error !== d.error) throw new Error('Replay disagrees with format correction.');
           correction = error;
         }
-      }
-      for (let i = d.motorStart; i < d.motorStart + d.motorCount; i++) {
-        const command = trajectory.entries[i].command;
-        memory.record(asAction(command), observe(result.feedback[i], command));
       }
     }
     if (sortedJSON(record.sensoryMemory) !== sortedJSON(memory.sensoryMemory) ||
