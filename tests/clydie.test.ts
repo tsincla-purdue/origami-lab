@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {createExperiment, recordFlip, type TactileFeedback} from '../src/lab';
 import {importExperiment, serializeExperiment, ollamaController, randomController, replayEpisode, runEpisode, summarize} from '../src/clydie/episode';
-import {format, instructions, observe, type Controller} from '../src/clydie/protocol';
+import {actions, format, instructions, observe, parseChoice, type Controller} from '../src/clydie/protocol';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -25,6 +25,21 @@ function script(...actions: object[]): Controller {
 }
 
 describe('bounded tactile exploration', () => {
+  it('requires coordinates in the provider schema for exactly the actions that need them', () => {
+    for (const action of actions) {
+      const branches = format.oneOf.filter(branch => branch.properties.action.enum.some(a => a === action));
+      expect(branches).toHaveLength(1);
+      const [branch] = branches;
+      const needsPoint = ['beginDrag', 'beginTrace', 'move'].includes(action);
+      expect('at' in branch.properties).toBe(needsPoint);
+      expect(branch.required.some(key => key === 'at')).toBe(needsPoint);
+      const positioned = () => parseChoice(JSON.stringify({action, at: {x: .3, y: .4}}));
+      const unpositioned = () => parseChoice(JSON.stringify({action}));
+      expect(needsPoint ? positioned : unpositioned).not.toThrow();
+      expect(needsPoint ? unpositioned : positioned).toThrow();
+    }
+  });
+
   it('rejects malformed or out-of-vocabulary replies without issuing any motor commands', async () => {
     const bad = ['not JSON', 'null', '[{"action":"flip"}]', '{"action":"fold"}', '{"action":"move"}',
       '{"action":"move","at":{"x":1e999,"y":0}}', '{"action":"move","at":{"x":-1.01,"y":0}}',

@@ -1,10 +1,12 @@
 // The controller's entire view. Runtime imports of the paper engine belong to the host.
 import type {TactileFeedback} from '../lab/tactile';
 
-export const actions = ['beginDrag', 'beginTrace', 'move', 'release', 'mark', 'flip', 'unfold', 'stop'] as const;
+const positionedActions = ['beginDrag', 'beginTrace', 'move'] as const;
+const otherActions = ['release', 'mark', 'flip', 'unfold', 'stop'] as const;
+export const actions = [...positionedActions, ...otherActions] as const;
 export type Point = {x: number; y: number};
-export type Action = {action: 'beginDrag' | 'beginTrace' | 'move'; at: Point}
-  | {action: 'release' | 'mark' | 'flip' | 'unfold' | 'stop'};
+export type Action = {action: typeof positionedActions[number]; at: Point}
+  | {action: typeof otherActions[number]};
 export type Note = {kind: 'observation' | 'conjecture'; text: string};
 export type Choice = Action & {note?: Note};
 const coord = {type: 'number', minimum: -1, maximum: 2};
@@ -15,10 +17,10 @@ const note = {type: 'object', required: ['kind', 'text'], additionalProperties: 
 export const format = {
   oneOf: [
     {type: 'object', additionalProperties: false, required: ['action', 'at'], properties: {
-      action: {type: 'string', enum: ['beginDrag', 'beginTrace', 'move']}, at: point, note,
+      action: {type: 'string', enum: positionedActions}, at: point, note,
     }},
     {type: 'object', additionalProperties: false, required: ['action'], properties: {
-      action: {type: 'string', enum: ['release', 'mark', 'flip', 'unfold', 'stop']}, note,
+      action: {type: 'string', enum: otherActions}, note,
     }},
   ],
 } as const;
@@ -35,7 +37,7 @@ export function parseChoice(raw: string): Choice {
   if (!object(v) || !actions.some(a => a === v.action) || Object.keys(v).some(k => !['action','at','note'].includes(k))) {
     throw new Error('Expected one supported action.');
   }
-  const positioned = ['beginTrace', 'beginDrag', 'move'].includes(v.action as string);
+  const positioned = positionedActions.some(a => a === v.action);
   if (positioned) {
     if (!object(v.at) || Object.keys(v.at).length !== 2 ||
         ![v.at.x, v.at.y].every(n => typeof n === 'number' && Number.isFinite(n) && n >= coord.minimum && n <= coord.maximum)) {
