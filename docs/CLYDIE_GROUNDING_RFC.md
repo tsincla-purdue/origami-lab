@@ -120,7 +120,7 @@ type GroundedView = {
 - A genuine `surface` reading is informative, but twenty identical readings are not twenty discoveries. Consecutive equivalent readings can be coalesced with a count and motor range. Do not silently erase a grip failure, resisted move, contact-class transition, snap, landmark cue, or validator outcome.
 - A comparison may say “contact remained surface; proximity stayed 0; no new event was reported.” It must not say “the paper did not change” or “nothing was there.”
 - Where feedback contains several within-command events, show their **reported order**; an unchanged endpoint is not proof the intervening path lacked a feature.
-- Keep the v0.2 `grip-failed` versus `resistance` distinction and v0.3 stationary-tracing semantics intact.
+- Keep the existing `grip-failed` versus `resistance` distinction and tactile trajectory v3's stationary-tracing semantics intact.
 - All memory truncation/coalescing rules are deterministic, documented, and visible in episode metadata. Missing history is explicitly bounded, not silently treated as absent experience.
 
 ### 5.2 One illustrative interaction
