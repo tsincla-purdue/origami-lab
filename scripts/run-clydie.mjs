@@ -26,7 +26,7 @@ function inspect(record) {
     console.log(`\nDecision ${i + 1}  ${d.raw ?? '(no reply)'}`);
     if (d.error) console.log('  Error', d.error);
     for (const {command, feedback} of motors.slice(d.motorStart, d.motorStart + d.motorCount)) {
-      const felt = record.trajectory.version === 2 ? observe(feedback, command).events : feedback.events;
+      const felt = record.trajectory.version === 1 ? feedback.events : observe(feedback, command).events;
       const events = felt.map(e => [e.kind, e.contact ?? e.constraint].filter(Boolean).join(' '));
       console.log(' ', command.kind, JSON.stringify(feedback.motor), feedback.contact ?? '', 'proximity', feedback.proximity.toFixed(2),
         feedback.landmark ? `${feedback.landmark.kind} intensity ${feedback.landmark.intensity.toFixed(2)}` : '',

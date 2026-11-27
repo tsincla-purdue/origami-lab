@@ -22,6 +22,15 @@ The default is 400 and the supported range is 32–4096. Divide individual
 motions longer than 4096 virtual pixels into smaller moves. Each move is
 sampled at intervals of at most 2 virtual pixels.
 
+A trace lasts until the finger lifts or another manipulation replaces it.
+During a trace, `move(to)` senses features along the path. A repeated
+`beginTrace(at)` at the exact current motor coordinates leaves the finger
+where it is. The log retains the command, the current sensation and an empty
+event list. At any different coordinates, `beginTrace` lifts the finger and
+places it directly at its destination. Only the departure and arrival can
+produce contact events on that command. A `release` followed by a new touch
+at the same location can produce a fresh contact.
+
 ## Feedback
 
 - `motor` echoes the current hand position. Positions on events are
@@ -169,7 +178,9 @@ their feedback. Sensations and refused releases stay outside the canonical
 experiment export. Accepted folds, marks, and turnovers use the normal
 experiment format and replay.
 
-New tactile logs carry `trajectory.version = 2`. Replay selects the sampler
-from the saved version. Version 1 preserves the earlier edge contact at a
-corner and omits landmark intensity. The canonical experiment format tracks
+New logs carry `trajectory.version = 3`. Replay selects the tracing behavior
+and surface sampler from the saved version. Versions 1 and 2 reproduce the
+original lift and recontact on every repeated trace start. Version 1 retains
+edge contact at a corner and omits landmark intensity. Versions 2 and 3 share
+the same corner and landmark sensations. The canonical experiment format tracks
 material operations independently of these sensory versions.

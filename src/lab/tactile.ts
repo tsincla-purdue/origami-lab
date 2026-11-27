@@ -43,11 +43,13 @@ export type TactileCommand =
   | {readonly kind: 'release' | 'mark' | 'flip' | 'unfold'};
 
 export interface TactileTrajectory {
-  readonly version: 1 | 2;
+  readonly version: 1 | 2 | 3;
   readonly pixelsPerUnit: number;
   readonly entries: readonly {readonly command: TactileCommand; readonly feedback: TactileFeedback}[];
   readonly truncated: boolean;
 }
+
+export const TACTILE_VERSION = 3;
 
 export interface TactileOptions {
   readonly sensoryVersion?: TactileTrajectory['version'];
@@ -83,8 +85,8 @@ function run(hand: TactileHand, command: TactileCommand): TactileFeedback {
 /** Give the controller only `hand`. The host owns the experiment and diagnostic log. */
 export function createTactileSession(initial: Experiment, options: TactileOptions = {}) {
   let experiment = initial;
-  const version = options.sensoryVersion ?? 2;
-  if (version !== 1 && version !== 2) throw new Error('Unsupported tactile sensory version.');
+  const version = options.sensoryVersion ?? TACTILE_VERSION;
+  if (version !== 1 && version !== 2 && version !== 3) throw new Error('Unsupported tactile sensory version.');
   const pixelsPerUnit = options.pixelsPerUnit ?? 400;
   const logLimit = options.trajectoryLimit ?? 0;
   if (!Number.isFinite(pixelsPerUnit) || pixelsPerUnit < 32 || pixelsPerUnit > 4096) {
@@ -147,7 +149,7 @@ export function createTactileSession(initial: Experiment, options: TactileOption
   }
 
   function trace(at: Vec) {
-    const next = gestures.surfaceAt(at, WARM_PIXELS / pixelsPerUnit, CONTACT_PIXELS / pixelsPerUnit, version) ?? {proximity: 0};
+    const next = gestures.surfaceAt(at, WARM_PIXELS / pixelsPerUnit, CONTACT_PIXELS / pixelsPerUnit, version === 1 ? 1 : 2) ?? {proximity: 0};
     if (next.key !== surface.key) {
       if (next.contact) events.push({kind: 'contact', motor: at, contact: next.contact});
       else if (surface.contact) events.push({kind: 'contact-lost', motor: at});
@@ -205,6 +207,9 @@ export function createTactileSession(initial: Experiment, options: TactileOption
       case 'drag':
       case 'trace':
         checkPosition(action.at);
+        // Keep a tracing finger down at the same point. The common recorder below still logs the command.
+        if (version === 3 && action.kind === 'trace' && mode === 'trace' &&
+            position.x === action.at.x && position.y === action.at.y) break;
         end();
         position = action.at;
         if (action.kind === 'trace') {
@@ -308,7 +313,7 @@ export function createTactileSession(initial: Experiment, options: TactileOption
 
 /** Replay motor inputs from a log's starting experiment. Saved sensations are never authoritative. */
 export function replayTactileTrajectory(initial: Experiment, trajectory: TactileTrajectory) {
-  if ((trajectory.version !== 1 && trajectory.version !== 2) || trajectory.entries.length > MAX_LOG_ENTRIES) {
+  if ((trajectory.version !== 1 && trajectory.version !== 2 && trajectory.version !== 3) || trajectory.entries.length > MAX_LOG_ENTRIES) {
     throw new Error('Unsupported tactile trajectory.');
   }
   const session = createTactileSession(initial, {pixelsPerUnit: trajectory.pixelsPerUnit, sensoryVersion: trajectory.version});

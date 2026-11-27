@@ -73,6 +73,11 @@ The provider sends two messages per request. The fixed system message gives a bl
 - Movement interpolation uses only the starting motor position and requested destination. It follows the path until completion or a host limit. The underlying tactile hand handles surface sampling, snapping, gesture interpretation and validation.
 - An optional note has a `kind` of `observation` or `conjecture` and up to 240 characters of `text`. The controller chooses both. Old notes drop out of working memory in insertion order. They remain in the episode record. The host never grades notes or supplies discoveries.
 
+While tracing, `move` samples the path to the next position. Repeating
+`beginTrace` at the same position consumes a motor command and reports the
+current sensation with zero new events. A trace start elsewhere lifts and
+repositions the finger. [Stationary-trace verification](verification/tracing-continuity.md)
+
 A sensing finger can trace without gripping. A drag start yields `grip-acquired`
 and dragging mode, or `grip-failed` and idle mode. After a failed grip, moving
 only changes the hand position. An acquired grip can still encounter resistance
