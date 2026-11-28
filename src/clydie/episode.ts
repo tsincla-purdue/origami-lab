@@ -2,9 +2,10 @@ import {
   TACTILE_VERSION, createExperiment, createTactileSession, importExperiment, replayTactileTrajectory, serializeExperiment,
   type Experiment, type TactileCommand, type TactileFeedback, type TactileHand, type TactileTrajectory,
 } from '../lab';
+import {decode, motorMessages, rememberTool, toolExchange, type ToolExchange, type ToolTurn} from './interaction';
 import {createMemory, memoryPolicy} from './memory';
 import {integer, ProviderError} from './controllers';
-import {observe, parseChoice, type Action, type Choice, type Controller, type Point, type View} from './protocol';
+import {observe, parseChoice, type Action, type Choice, type Controller, type Interaction, type Point, type View} from './protocol';
 
 export {lmstudioController, ollamaController, randomController} from './controllers';
 export {importExperiment, observe, serializeExperiment};
@@ -66,6 +67,7 @@ function formatError(err: unknown) {
 
 type Entry = TactileTrajectory['entries'][number];
 type Decision = {
+  tool?: ToolExchange; latencyMs?: number;
   inquiry?: View['inquiryNotebook'][number];
   view: View; raw?: string; generatedTokens?: number; choice?: Choice; error?: string;
   responseMetadata?: Record<string, unknown>;
@@ -74,14 +76,22 @@ type Decision = {
 };
 type Ending = 'motor-limit' | 'decision-limit' | 'duration' | 'model-timeout' | 'provider-error' | 'host-stop' | 'agent-stop';
 export interface Episode {
-  version: 2; memoryPolicy: typeof memoryPolicy; started: string; elapsedMs: number; controller: Controller['metadata']; settings: Settings;
+  version: 2 | 3 | 4; memoryPolicy: typeof memoryPolicy; started: string; elapsedMs: number; controller: Controller['metadata']; settings: Settings;
   initial: Experiment; decisions: Decision[]; trajectory: TactileTrajectory; overflow: Entry[];
   ending: Ending; inquiryNotebook: View['inquiryNotebook']; sensoryMemory: View['sensoryMemory']; experiment: Experiment;
+}
+
+function interactionMode(controller: Controller['metadata']): Interaction {
+  const mode = controller.interaction ?? 'structured';
+  if (mode === 'structured' || (controller.type === 'lmstudio' && (mode === 'native-tools' || mode === 'motor-json'))) return mode;
+  throw new Error('Unsupported recorded interaction mode.');
 }
 
 export async function runEpisode(controller: Controller, options: Partial<Settings> = {},
   initial = createExperiment(), signal?: AbortSignal): Promise<Episode> {
   const config = settings(options);
+  const mode = interactionMode(controller.metadata);
+  const turns: ToolTurn[] = [];
   const session = createTactileSession(initial, config);
   const started = new Date().toISOString();
   const start = performance.now(), deadline = start + config.durationMs;
@@ -100,7 +110,8 @@ export async function runEpisode(controller: Controller, options: Partial<Settin
     if (decisions.length >= config.maxDecisions) { ending = 'decision-limit'; break; }
     const decision: Decision = {view: memory.view(correction), motorStart: log.length, motorCount: 0};
     decisions.push(decision);
-    const requestDeadline = performance.now() + config.timeoutMs;
+    const requested = performance.now();
+    const requestDeadline = requested + config.timeoutMs;
     const timeout = AbortSignal.timeout(config.timeoutMs);
     const request = AbortSignal.any(signal ? [duration, timeout, signal] : [duration, timeout]);
     let rejectOnAbort: (() => void) | undefined;
@@ -110,7 +121,7 @@ export async function runEpisode(controller: Controller, options: Partial<Settin
         request.addEventListener('abort', rejectOnAbort, {once: true});
       });
       // Controllers receive a detached observation. Session, host history and diagnostics stay here.
-      const reply = await Promise.race([controller.decide(structuredClone(decision.view), request), cancelled]);
+      const reply = await Promise.race([controller.decide(structuredClone(decision.view), request, structuredClone(turns)), cancelled]);
       decision.raw = reply.raw;
       decision.generatedTokens = reply.generatedTokens;
       if (reply.responseMetadata) decision.responseMetadata = reply.responseMetadata;
@@ -120,6 +131,7 @@ export async function runEpisode(controller: Controller, options: Partial<Settin
       ending = hostLimit() ?? (timeout.aborted ? 'model-timeout' : 'provider-error');
       break;
     } finally {
+      if (controller.metadata.type === 'lmstudio') decision.latencyMs = Math.round(performance.now() - requested);
       if (rejectOnAbort) request.removeEventListener('abort', rejectOnAbort);
     }
     if ((ending = hostLimit())) break;
@@ -127,8 +139,11 @@ export async function runEpisode(controller: Controller, options: Partial<Settin
       decision.error = 'Controller exceeded its response deadline.';
       ending = 'model-timeout'; break;
     }
+    let call: ToolExchange['call'] | undefined;
     try {
-      decision.choice = parseChoice(decision.raw);
+      const parsed = decode(decision.raw, mode);
+      decision.choice = parsed.choice;
+      call = parsed.call;
     } catch (err) {
       decision.error = formatError(err);
       correction = decision.error;
@@ -137,17 +152,24 @@ export async function runEpisode(controller: Controller, options: Partial<Settin
     correction = undefined;
     const choice = decision.choice;
     if (choice.note) decision.inquiry = memory.inquire(choice.note);
-    if (choice.action === 'stop') { ending = 'agent-stop'; break; }
+    const senses: ReturnType<typeof observe>[] = [];
     for (const command of path(choice, memory.motor, config)) {
       if (hostLimit()) break;
       const feedback = execute(session.hand, command);
       log.push({command, feedback});
       decision.motorCount++;
-      memory.record(asAction(command), observe(feedback, command));
+      const sense = observe(feedback, command);
+      memory.record(asAction(command), sense);
+      if (call) senses.push(sense);
     }
+    if (call) {
+      decision.tool = toolExchange(call, decision.motorStart, senses, memory);
+      rememberTool(turns, {...decision.tool, before: decision.view}, config.recentLimit);
+    }
+    if (choice.action === 'stop') { ending = 'agent-stop'; break; }
   }
   const trajectory = session.trajectory() ?? {version: TACTILE_VERSION, pixelsPerUnit: config.pixelsPerUnit, entries: [], truncated: log.length > 0};
-  return {version: 2, memoryPolicy: structuredClone(memoryPolicy), started, elapsedMs: Math.round(performance.now() - start), controller: controller.metadata,
+  return {version: mode === 'structured' ? 2 : 4, memoryPolicy: structuredClone(memoryPolicy), started, elapsedMs: Math.round(performance.now() - start), controller: controller.metadata,
     settings: config, initial, decisions, trajectory, overflow: log.slice(trajectory.entries.length),
     ending, inquiryNotebook: memory.inquiryNotebook, sensoryMemory: memory.sensoryMemory, experiment: session.experiment()};
 }
@@ -165,7 +187,7 @@ type HistoricalEpisode = Pick<Episode, 'initial' | 'experiment' | 'trajectory' |
 };
 
 export function replayEpisode(record: Episode | HistoricalEpisode) {
-  if (record.version !== 1 && record.version !== 2) throw new Error('Unsupported Clydie episode version.');
+  if (record.version !== 1 && record.version !== 2 && record.version !== 3 && record.version !== 4) throw new Error('Unsupported Clydie episode version.');
   const initial = importExperiment(JSON.stringify(record.initial));
   const {trajectory} = record;
   if (trajectory.truncated || record.overflow.length) return {status: 'incomplete' as const};
@@ -198,19 +220,34 @@ export function replayEpisode(record: Episode | HistoricalEpisode) {
       sortedJSON(result.experiment) !== sortedJSON(record.experiment)) {
     throw new Error('Replay disagrees with recorded feedback or canonical experiment.');
   }
-  if (record.version === 2) {
+  if (record.version !== 1) {
+    const mode = interactionMode(record.controller);
+    const turns: ToolTurn[] = [];
+    if ((mode === 'structured') !== (record.version === 2)) throw new Error('Interaction and episode version disagree.');
     const memory = createMemory(config);
     let correction: string | undefined;
     if (sortedJSON(record.memoryPolicy) !== sortedJSON(memoryPolicy)) throw new Error('Unknown sensory memory policy.');
     const interrupted = record.ending === 'duration' || record.ending === 'host-stop' ||
       (record.ending === 'motor-limit' && trajectory.entries.length === config.maxCommands);
     for (const d of record.decisions) {
-      if (sortedJSON(d.view) !== sortedJSON(memory.view(correction))) throw new Error('Replay disagrees with recorded controller view.');
+      const view = memory.view(correction);
+      if (sortedJSON(d.view) !== sortedJSON(view)) throw new Error('Replay disagrees with recorded controller view.');
+      if (record.version >= 3 && d.raw !== undefined) {
+        const {instructions, inputBudget} = record.controller;
+        if (typeof instructions !== 'string' || typeof inputBudget !== 'number' || !Number.isFinite(inputBudget)) {
+          throw new Error('Missing recorded input configuration.');
+        }
+        const input = motorMessages(instructions, view, turns, mode === 'native-tools', inputBudget);
+        if (input.inputBytes !== d.responseMetadata?.inputBytes || sortedJSON(input.messages) !== sortedJSON(d.responseMetadata?.messages)) {
+          throw new Error('Replay disagrees with recorded model input.');
+        }
+      }
       if (d.choice) {
-        const parsed = parseChoice(d.raw ?? '');
+        const {choice: parsed, call} = decode(d.raw ?? '', mode);
         if (sortedJSON(parsed) !== sortedJSON(d.choice)) throw new Error('Replay disagrees with recorded choice.');
         const inquiry = parsed.note ? memory.inquire(parsed.note) : undefined;
         if (sortedJSON(inquiry) !== sortedJSON(d.inquiry)) throw new Error('Replay disagrees with time-stamped inquiry.');
+        const senses: ReturnType<typeof observe>[] = [];
         const expected = path(parsed, memory.motor, config);
         for (let i = d.motorStart; i < d.motorStart + d.motorCount; i++) {
           const command = trajectory.entries[i].command;
@@ -218,23 +255,32 @@ export function replayEpisode(record: Episode | HistoricalEpisode) {
           if (next.done || sortedJSON(next.value) !== sortedJSON(command)) {
             throw new Error(`Recorded command at motor index ${i} disagrees with the choice's motor path.`);
           }
-          memory.record(asAction(command), observe(result.feedback[i], command));
+          const sense = observe(result.feedback[i], command);
+          memory.record(asAction(command), sense);
+          if (call) senses.push(sense);
         }
         if (!expected.next().done && !(interrupted && d === record.decisions.at(-1))) {
           throw new Error('Recorded decision ends before its motor path is complete.');
         }
+        const exchange = call && toolExchange(call, d.motorStart, senses, memory, record.version >= 4);
+        if (sortedJSON(exchange) !== sortedJSON(d.tool)) throw new Error('Replay disagrees with recorded tool call or host result.');
+        if (exchange) rememberTool(turns, {...exchange, before: view}, config.recentLimit);
         correction = undefined;
       } else {
-        if (d.motorCount || d.inquiry) throw new Error('Invalid decision issued motor commands or inquiry.');
+        if (d.motorCount || d.inquiry || d.tool) throw new Error('Invalid decision issued motor commands or inquiry.');
         // Only format failures can lead to another request. Transport and deadline errors end the run.
-        if (d !== record.decisions.at(-1)) {
+        if (d !== record.decisions.at(-1) || (record.version >= 3 && record.ending === 'decision-limit')) {
           if (d.raw === undefined) throw new Error('Missing model reply before correction.');
           let error: string | undefined;
-          try { parseChoice(d.raw); } catch (err) { error = formatError(err); }
+          try { decode(d.raw, mode); } catch (err) { error = formatError(err); }
           if (!error || error !== d.error) throw new Error('Replay disagrees with format correction.');
           correction = error;
         }
       }
+    }
+    if (record.version >= 3 && ((record.ending === 'agent-stop') !== (record.decisions.at(-1)?.choice?.action === 'stop') ||
+        record.decisions.slice(0, -1).some(d => d.choice?.action === 'stop'))) {
+      throw new Error('Replay disagrees with recorded stop decision.');
     }
     if (sortedJSON(record.sensoryMemory) !== sortedJSON(memory.sensoryMemory) ||
         sortedJSON(record.inquiryNotebook) !== sortedJSON(memory.inquiryNotebook)) throw new Error('Replay disagrees with final memory.');

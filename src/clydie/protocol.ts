@@ -1,8 +1,9 @@
 // The controller's entire view. Runtime imports of the paper engine belong to the host.
+import type {ToolTurn} from './interaction';
 import type {SensoryFact, SensoryStep} from './memory';
 import type {TactileCommand, TactileFeedback} from '../lab/tactile';
 
-const positionedActions = ['beginDrag', 'beginTrace', 'move'] as const;
+export const positionedActions = ['beginDrag', 'beginTrace', 'move'] as const;
 const otherActions = ['release', 'mark', 'flip', 'unfold', 'stop'] as const;
 export const actions = [...positionedActions, ...otherActions] as const;
 export type Point = {x: number; y: number};
@@ -12,7 +13,7 @@ const noteKinds = ['question', 'conjecture', 'reflection'] as const;
 export type Note = {kind: typeof noteKinds[number]; text: string};
 export type Choice = Action & {note?: Note};
 const coord = {type: 'number', minimum: -1, maximum: 2};
-const point = {type: 'object', required: ['x', 'y'], additionalProperties: false, properties: {x: coord, y: coord}};
+export const point = {type: 'object', required: ['x', 'y'], additionalProperties: false, properties: {x: coord, y: coord}};
 const note = {type: 'object', required: ['kind', 'text'], additionalProperties: false, properties: {
   kind: {type: 'string', enum: noteKinds}, text: {type: 'string', minLength: 1, maxLength: 240},
 }};
@@ -35,16 +36,32 @@ Follow surprises, change your question, or pursue something entirely different w
 
 There is no particular shape to make, no problem to solve, and no result you need to achieve. The exploration itself is the point.`;
 
-export const instructions = `${invitation}
+const measurement = `Only host feedback reports sensations. The hand cannot sense texture, stiffness, pressure, sound or elasticity. Zero proximity means no local proximity signal was reported. It does not establish uniformity. sense.events lists reported events in order. delta compares readings excluding motor position. No reported change describes only the sensors.`;
+const motors = `beginTrace places a sensing finger. At another position it lifts and repositions. At the same position it keeps tracing. move samples the intervening path. beginDrag tries to grip an accessible corner, exposed edge or material feature. A flat interior touch can fail. After failure move moves only the hand. A held grip can encounter resistance. release lifts or lets go and may complete a fold.`;
+const workspace = `The original square spans [0,1] on both axes, y upwards. Proximity and landmark intensity range from 0 to 1.`;
 
-Measurement contract
-Only host feedback reports sensations. The hand cannot sense texture, stiffness, pressure, sound or elasticity. Zero proximity means no local proximity signal was reported. It does not establish uniformity. sense.events lists reported events in order. delta compares readings excluding motor position. No reported change describes only the sensors.
-The action you choose now has not happened. Its consequences arrive in the next view. Your optional note (question, conjecture or reflection, up to 240 characters) concerns earlier experience. inquiryNotebook holds your own words. Guesses are welcome. beforeMotorIndex is the number of completed commands when you wrote it.
+const beforeAction = 'The action you choose now has not happened. Its consequences arrive in the next view.';
+const jsonMotorInstructions = `Return one JSON action. ${motors}
+beginTrace, beginDrag and move require at with numeric x and y in [-1,2]. Omit at for release, mark (mark the current contact), flip (turn over), unfold (open the last fold), or stop. ${workspace}`;
+const contract = `${invitation}\n\nMeasurement contract\n${measurement}\n${beforeAction}`;
+export const instructions = `${contract} Your optional note (question, conjecture or reflection, up to 240 characters) concerns earlier experience. inquiryNotebook holds your own words. Guesses are welcome. beforeMotorIndex is the number of completed commands when you wrote it.
 
-Return one JSON action. beginTrace places a sensing finger. At another position it lifts and repositions. At the same position it keeps tracing. move samples the intervening path. beginDrag tries to grip an accessible corner, exposed edge or material feature. A flat interior touch can fail. After failure move moves only the hand. A held grip can encounter resistance. release lifts or lets go and may complete a fold.
-beginTrace, beginDrag and move require at with numeric x and y in [-1,2]. Omit at for release, mark (mark the current contact), flip (turn over), unfold (open the last fold), or stop. The original square spans [0,1] on both axes, y upwards. Proximity and landmark intensity range from 0 to 1.`;
+${jsonMotorInstructions}`;
 
-function object(value: unknown): value is Record<string, unknown> {
+export type Interaction = 'structured' | 'motor-json' | 'native-tools';
+export function motorInstructions(native: boolean) {
+  const shared = `${invitation}
+
+Only host readings report sensations. The hand cannot sense texture, stiffness, pressure, sound or elasticity. Zero proximity only means no local signal. No reported change describes only the sensors. Events are ordered. Deltas exclude position. The action you choose now has not happened. Feedback follows.
+
+beginTrace lifts and repositions unless stationary. move samples the path. beginDrag tries gripping an accessible corner, exposed edge or feature. Interior grips can fail. After failure move moves only the hand. Grips can meet resistance. release lifts or lets go and may fold. mark marks contact, flip turns over, unfold opens the last fold, stop ends play. Trace, drag and move take x,y in [-1,2]. Initial square [0,1] per axis, y up. Proximity and landmark intensity span [0,1].`;
+  const wire = native
+    ? 'Call one function. Apply changes in order. count repeats a reading and its events. positions lists each [x,y].'
+    : 'Return one JSON action. Put x and y in at for positioned actions. Omit at otherwise.';
+  return `${shared}\n\n${wire}`;
+}
+
+export function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 export function parseChoice(raw: string): Choice {
@@ -101,5 +118,5 @@ export type View = {
 };
 export interface Controller {
   metadata: Record<string, unknown>;
-  decide(view: View, signal: AbortSignal): Promise<{raw: string; generatedTokens?: number; responseMetadata?: Record<string, unknown>}>;
+  decide(view: View, signal: AbortSignal, history?: readonly ToolTurn[]): Promise<{raw: string; generatedTokens?: number; responseMetadata?: Record<string, unknown>}>;
 }
